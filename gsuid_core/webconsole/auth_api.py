@@ -7,6 +7,7 @@ import secrets
 from typing import Optional
 from hashlib import sha256
 
+import bcrypt
 import aiofiles
 from fastapi import File, Header, Request, UploadFile
 from sqlmodel import func, select
@@ -96,21 +97,39 @@ def get_register_code() -> str:
     return core_config.get_config("REGISTER_CODE")
 
 
-def hash_password(password: str, salt: Optional[str] = None) -> str:
-    """哈希密码"""
-    if salt is None:
-        salt = secrets.token_hex(16)
+_PASSWORD_PREFIX_BCRYPT = "bcrypt$"
+
+
+def _legacy_sha256_hash(password: str, salt: str) -> str:
     password_hash = sha256((password + salt).encode()).hexdigest()
     return f"{salt}${password_hash}"
 
 
+def hash_password(password: str, salt: Optional[str] = None) -> str:
+    """哈希密码。新哈希为 bcrypt；``salt`` 仅保留给旧 SHA-256 校验路径。"""
+    if salt is not None:
+        return _legacy_sha256_hash(password, salt)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    return f"{_PASSWORD_PREFIX_BCRYPT}{hashed.decode('ascii')}"
+
+
 def verify_password(password: str, stored_hash: str) -> bool:
     """验证密码（恒定时间比较，避免时序侧信道泄露）"""
+    if not stored_hash:
+        return False
+    if stored_hash.startswith(_PASSWORD_PREFIX_BCRYPT):
+        try:
+            return bcrypt.checkpw(
+                password.encode("utf-8"),
+                stored_hash[len(_PASSWORD_PREFIX_BCRYPT) :].encode("ascii"),
+            )
+        except (ValueError, TypeError):
+            return False
     try:
-        salt, _hash_value = stored_hash.split("$")
+        salt, _hash_value = stored_hash.split("$", 1)
     except (ValueError, AttributeError):
         return False
-    computed = hash_password(password, salt)
+    computed = _legacy_sha256_hash(password, salt)
     return secrets.compare_digest(computed.encode(), stored_hash.encode())
 
 
