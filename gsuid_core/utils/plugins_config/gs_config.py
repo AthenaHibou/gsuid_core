@@ -1,5 +1,6 @@
 import sys
 import json
+import time
 import datetime
 from abc import ABC
 from copy import deepcopy
@@ -258,16 +259,26 @@ class StringConfig:
         self.write_config()
 
     def write_config(self):
-        with atomic_save(
-            str(self.CONFIG_PATH),
-            text_mode=False,
-            overwrite=True,
-            file_perms=0o644,
-        ) as file:
-            if file:
-                file.write(msgjson.format(msgjson.encode(self.config), indent=4))
-            else:
-                logger.error(t("log.config.write_fail"))
+        payload = msgjson.format(msgjson.encode(self.config), indent=4)
+        # Windows 上杀软/索引器可能瞬时占用句柄, 使 atomic_save 退出时的
+        # ReplaceFileW 抛 OSError; 重试数次, 仍失败退化为直接写, 不卡启动。
+        for attempt in range(4):
+            try:
+                with atomic_save(
+                    str(self.CONFIG_PATH),
+                    text_mode=False,
+                    overwrite=True,
+                    file_perms=0o644,
+                ) as file:
+                    if file:
+                        file.write(payload)
+                    else:
+                        logger.error(t("log.config.write_fail"))
+                return
+            except OSError:
+                time.sleep(0.2 * (attempt + 1))
+        with self.CONFIG_PATH.open("w", encoding="UTF-8") as file:
+            file.write(payload)
 
     def repair_config(self):
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
