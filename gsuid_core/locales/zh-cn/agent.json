@@ -26,6 +26,7 @@
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] 零工具调用却声称已完成动作，追加纠正重跑",
   "log.agent.fakedone_claim": "[FakeDoneGate] 完成声明后续有工具调用支撑，补发暂扣文本",
   "log.agent.fakedone_correction_run_keeping_fail": "[FakeDoneGate] 纠正重跑失败，沿用原结果: {_fe}",
+  "log.agent.fakedone_meta_speech_dropped": "[FakeDoneGate] 纠正轮产出过程元话语，已拦截不进群: {p0}",
   "log.agent.fakedone_se": "[FakeDoneGate] 暂扣文本补发失败: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] 零工具完成声明，暂扣待核: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] 已注入 find_tools，本轮启用渐进式工具暴露",

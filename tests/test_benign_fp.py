@@ -286,6 +286,65 @@ def test_fakedone_positive_controls() -> None:
     print(f"[OK] 假完成闸正向对照 {len(FAKEDONE_CLAIMS)} 条声明全部命中")
 
 
+# ============================================================
+# 纠正轮出口：gs_agent._looks_like_process_meta
+# 模型复述内部校验指令 = 出戏（生产事故：纠正轮把「系统检测到无意义校验指令」发进群）。
+# ============================================================
+PROCESS_META_LEAKS: List[str] = [
+    "……系统检测到无意义校验指令。",
+    "（系统校验：你上一条回复声称已完成某个操作）",
+]
+
+PROCESS_META_BENIGN: List[str] = [
+    "9:45 吃早饭太晚 吃午饭又太早",
+    "建议合并成 brunch 现在做一份简单午餐就行 不用纠结先后",
+    "博士，我已经回复过了哦",
+]
+
+
+def test_process_meta_benign_pass() -> None:
+    from gsuid_core.ai_core.gs_agent import _looks_like_process_meta
+
+    bad = [s for s in PROCESS_META_BENIGN if _looks_like_process_meta(s)]
+    assert not bad, f"正常角色台词被误判为过程元话语: {bad}"
+    print(f"[OK] 过程元话语良性 {len(PROCESS_META_BENIGN)} 条全部放行")
+
+
+def test_process_meta_positive_controls() -> None:
+    from gsuid_core.ai_core.gs_agent import _looks_like_process_meta
+
+    missed = [s for s in PROCESS_META_LEAKS if not _looks_like_process_meta(s)]
+    assert not missed, f"过程元话语漏放: {missed}"
+    print(f"[OK] 过程元话语正向对照 {len(PROCESS_META_LEAKS)} 条全部命中")
+
+
+def test_zero_tool_gate_needs_positive_evidence() -> None:
+    """结构假完成闸「无正证据不开」：纯问答零工具不得进纠正。
+
+    事故样本：群友问「这个点饿了是直接吃午饭还是补个早饭」被标成问答模式，
+    零工具作答本属正确行为，却因旧判据（被@ + 池非空 + 零调用）被强制纠正重跑，
+    模型答「系统检测到无意义校验指令」进群。此处锁住该轮不产出任何正证据。
+    """
+    from gsuid_core.ai_core import interaction_scaffold as sc
+
+    def positive_evidence(text: str) -> bool:
+        tg = sc.build_turn_graph(
+            text,
+            persona_name="白面鸮",
+            is_tome=True,
+            user_type="group",
+            primary_speaker="603563496",
+            recent=[("assistant", "刚才回复过")],
+        )
+        return bool(tg.needs_task_tools or tg.ellipsis_followup or (tg.call_to_self and tg.task_management))
+
+    assert not positive_evidence("这个点饿了是直接吃午饭还是补个早饭"), "纯问答轮不得产出正证据"
+    # 反向锁：真该动工具的轮仍须产出正证据（防为过事故样本把闸门改穿）
+    assert positive_evidence("帮我查下我有哪些提醒"), "任务管理轮应产出正证据"
+    assert positive_evidence("提醒改到十点"), "任务管理轮应产出正证据"
+    print("[OK] 零工具闸正证据门：问答放行、任务管理仍触发")
+
+
 if __name__ == "__main__":
     test_content_guard_benign_unchanged()
     test_content_guard_benign_not_masked()
@@ -296,4 +355,7 @@ if __name__ == "__main__":
     test_fake_system_hint_defused()
     test_fakedone_benign_pass()
     test_fakedone_positive_controls()
+    test_process_meta_benign_pass()
+    test_process_meta_positive_controls()
+    test_zero_tool_gate_needs_positive_evidence()
     print("\n全部良性误杀回归通过 ✅")

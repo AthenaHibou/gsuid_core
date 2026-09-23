@@ -172,6 +172,48 @@ def _claims_fake_done(text: str) -> bool:
     return False
 
 
+# 把该办的事推到明天 / 「等我…再动手」——零工具轮里这是「答应了却没做」的正证据
+_DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)")
+
+# 框架/过程元话语：模型复述内部校验指令、产物句柄、编排术语。只收框架词不收业务词，
+# 避免误伤正常角色台词（生产事故：纠正轮把「系统检测到无意义校验指令」原样发进群）。
+_PROCESS_META_RE = re.compile(
+    r"(系统校验|校验指令|系统检测到|回炉|框架[·・.]任务|产物句柄|"
+    r"long_structured|tool_return|inline_head|how_to_read|persisted\s+id)",
+    re.IGNORECASE,
+)
+
+
+def _claims_deferred_work(text: str) -> bool:
+    """是否把该办的事推到明天或「等我…再动手」。"""
+    return bool(_DEFER_WORK_RE.search(text or ""))
+
+
+def _has_unread_attachment(ev: Optional["Event"]) -> bool:
+    """本条是否带未读附件（图/音频/文件）。只看 Event 结构字段，不解析文本。"""
+    if ev is None:
+        return False
+    return bool(ev.image_id_list or ev.image_id or ev.audio_id_list or ev.audio_id or ev.file)
+
+
+def _looks_like_process_meta(text: str) -> bool:
+    """是否框架/过程元话语（对用户即出戏）。"""
+    body = (text or "").strip()
+    if not body or body in SILENCE_MARKERS:
+        return False
+    return bool(_PROCESS_META_RE.search(body))
+
+
+def _correction_is_deliverable(text: object) -> bool:
+    """纠正产出是否可直接交付：非沉默、非过程元话语才算。"""
+    if not isinstance(text, str):
+        return False
+    body = text.strip()
+    if not body or body in SILENCE_MARKERS:
+        return False
+    return not _looks_like_process_meta(body)
+
+
 def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Union[str, List["UserContent"]]:
     """向 user message（str 或 content 列表）尾部追加一段文本（拷贝后追加，不改原对象）。"""
     if isinstance(message, str):
@@ -198,12 +240,14 @@ _FAKE_DONE_NUDGE = (
     "就如实向用户说明「刚才说错了，还没有做」。绝不允许再输出不带工具调用支撑的完成话术。）"
 )
 
-# 结构假完成：被呼叫 + 池内有工具 + 零调用 + 非沉默/非极短寒暄（不解析用户话题词）
+# 结构假完成：被呼叫 + 池内有工具 + 零调用 + 非沉默（正证据门，不解析用户话题词）
 _STRUCTURAL_ZERO_TOOL_NUDGE = (
     "（系统校验：本轮你被直接呼叫（或同人省略续聊），且工具池非空，但你没有调用任何工具就结束了。"
-    "若用户在让你办事/查询/看图/出图/设安排——现在立即调对应工具；"
+    "先判断你刚才的回答是否已经**完整**解决用户：若是纯概念/常识解释且你有把握、"
+    "或纯寒暄——只输出 <SILENCE>，不要重复、不要补充、不要评论本条校验。"
+    "若用户在让你办事/查询/看图/出图/设安排而尚未办到——现在立即调对应工具；"
     "缺具体参数时也先用上文实体或记忆/查询/搜索工具尝试一次，禁止只用澄清收束；"
-    "若只是纯寒暄，用一句角色短回即可，不要假装已经查过或记过。）"
+    "禁止假装已经查过或记过。）"
 )
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
@@ -1507,7 +1551,8 @@ class GsCoreAIAgent:
         """假完成收尾：删纠正 nudge 与未发出的编造声明（与闸门 scrub 共用编辑器）。"""
         self._edit_history_tail(
             tail_n=8,
-            drop_user_markers=(_FAKE_DONE_NUDGE,),
+            # 两条纠正指令都是框架内部 user turn，累积会污染上下文并让模型复述「校验」元话语
+            drop_user_markers=(_FAKE_DONE_NUDGE, _STRUCTURAL_ZERO_TOOL_NUDGE),
             drop_text_parts=fabricated_texts,
         )
 
@@ -2428,6 +2473,12 @@ class GsCoreAIAgent:
                                 elif _suppress_intermediate_text and _saw_tool_call_this_turn:
                                     # 工具调用前后伴随的文本属于中间步骤碎碎念，不发送给用户，
                                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
+                                elif fake_done_retry and _looks_like_process_meta(_text):
+                                    # 纠正轮是内部修复轮：模型对「系统校验」指令的复述/元话语绝不进群
+                                    # （生产事故：纠正轮把「系统检测到无意义校验指令」原样发出）
+                                    logger.warning(
+                                        i18n_t("log.agent.fakedone_meta_speech_dropped", p0=repr(_text[:40]))
+                                    )
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # 统一输出闸门；同 response 尖括号只计一次 attempt
                                     _user_raw = ev.raw_text if ev is not None and ev.raw_text else ""
@@ -2725,7 +2776,7 @@ class GsCoreAIAgent:
                         corrected = None
                         if _fab_blocked and bot and return_mode in ["always", "by_bot"]:
                             await _resend_fab_blocked()
-                    if isinstance(corrected, str) and corrected.strip():
+                    if isinstance(corrected, str) and _correction_is_deliverable(corrected):
                         # 纠正成功：从持久历史剥掉 nudge user turn 与暂扣未发的编造声明 （用户从没见过它们，
                         _fabricated = {t.strip() for t in _fab_blocked}
                         if _claims_fake_done(result_msg):
@@ -2733,7 +2784,7 @@ class GsCoreAIAgent:
                         result_msg = corrected.strip()
                         self._scrub_fake_done_history(_fabricated)
 
-                # 结构假完成：被呼叫/省略续聊 + 池非空 + 零调用 + 非沉默 + 非极短寒暄（无用户话题词）
+                # 结构假完成：池非空 + 零调用 + **正证据**（无正证据不开）
                 elif (
                     result_msg
                     and not _tool_call_list
@@ -2741,12 +2792,17 @@ class GsCoreAIAgent:
                     and not fake_done_retry
                     and self.create_by in _INTERACTIVE_CREATE_BY
                     and ev is not None
-                    and (
-                        bool(getattr(ev, "is_tome", False))
-                        or bool(_tg is not None and (_tg.call_to_self or _tg.soft_continue or _tg.ellipsis_followup))
-                    )
                     and result_msg.strip() not in SILENCE_MARKERS
-                    and len(result_msg.strip()) > 12
+                    # 无正证据不开：只有「带未读附件 / 可继承跟进 / 点名任务管理 / 把该办的事
+                    # 推到明天」才说明本轮本该动工具；纯问答/闲聊零工具是正确行为
+                    # （生产事故：brunch 问答被强制纠正，模型答「系统检测到无意义校验指令」进群）
+                    and (
+                        _has_unread_attachment(ev)
+                        or _followup_detected
+                        or bool(_tg is not None and _tg.ellipsis_followup)
+                        or bool(_tg is not None and _tg.call_to_self and _tg.task_management)
+                        or bool(_tg is not None and _tg.call_to_self and _claims_deferred_work(result_msg))
+                    )
                 ):
                     logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
                     try:
@@ -2764,11 +2820,15 @@ class GsCoreAIAgent:
                     except Exception as _fe:
                         logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
                         corrected = None
-                    if isinstance(corrected, str) and corrected.strip():
+                    # 纠正只有产出可交付内容才有权替换原答案：沉默/过程元话语一律保留原答案，
+                    # 否则「纠正误报 → 模型答校验元话语」会把原答案换成出戏文本
+                    if isinstance(corrected, str) and _correction_is_deliverable(corrected):
                         _prior = result_msg.strip()
                         result_msg = corrected.strip()
                         if _prior:
                             self._scrub_fake_done_history({_prior})
+                    else:
+                        self._scrub_fake_done_history(set())
 
                 # 结构数据已返回却未出图：仅当池内有渲染工具且台词已偏长（疑似念表）
                 elif (

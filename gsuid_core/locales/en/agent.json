@@ -26,6 +26,7 @@
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] No tool call yet claims to have completed the action; appending correction re-run",
   "log.agent.fakedone_claim": "[FakeDoneGate] Completion claim later backed by tool calls; re-sending withheld text",
   "log.agent.fakedone_correction_run_keeping_fail": "[FakeDoneGate] Correction re-run failed; keeping the original result: {_fe}",
+  "log.agent.fakedone_meta_speech_dropped": "[FakeDoneGate] Correction pass produced process meta speech; dropped before delivery: {p0}",
   "log.agent.fakedone_se": "[FakeDoneGate] Failed to re-send withheld text: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] Zero-tool completion claim; withheld pending verification: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] Injected find_tools; progressive tool exposure enabled for this turn",

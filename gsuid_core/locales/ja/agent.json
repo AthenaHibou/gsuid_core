@@ -26,6 +26,7 @@
   "log.agent.fakedone_call_action_appending_ok": "[GsCoreAIAgent] ツール呼び出しがゼロなのに動作完了を主張しているため、修正リランを追加します",
   "log.agent.fakedone_claim": "[FakeDoneGate] 完了宣言の後にツール呼び出しがあったため、保留していたテキストを再送します",
   "log.agent.fakedone_correction_run_keeping_fail": "[FakeDoneGate] 修正リランに失敗しました。元の結果を採用します: {_fe}",
+  "log.agent.fakedone_meta_speech_dropped": "[FakeDoneGate] 修正リランがプロセスメタ発話を生成したため、配信前に破棄しました: {p0}",
   "log.agent.fakedone_se": "[FakeDoneGate] 保留テキストの再送に失敗しました: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] ツールゼロでの完了宣言。検証保留中です: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] find_tools を注入しました。今回は漸進的なツール公開を有効にします",
