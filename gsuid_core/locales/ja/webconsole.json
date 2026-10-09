@@ -29,6 +29,7 @@
   "log.webconsole.config_name_item_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込みに失敗",
   "log.webconsole.config_name_key_write_exception": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込み中に例外が発生: {e}",
   "log.webconsole.config_name_key_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込みに失敗",
+  "log.webconsole.framework_config_bulk_skip_task_level_keys": "[フレームワーク設定] {keys} はタスク設定カード専用エンドポイントで管理されるため、一括保存ではスキップした（旧フォームスナップショットによる上書き防止）",
   "log.webconsole.core_clear_console_o_tables": "[core コンソール旧テーブルクリア] テーブルを検出: {existing_tables}",
   "log.webconsole.core_clear_web_conso_deletion": "[core Webコンソールアカウントクリア] 削除失敗: {e}",
   "log.webconsole.core_clear_web_conso_get_table_list_fail": "[core Webコンソールアカウントクリア] テーブル一覧の取得に失敗: {e}",

@@ -29,6 +29,7 @@
   "log.webconsole.config_name_item_write_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入失败",
   "log.webconsole.config_name_key_write_exception": "[框架配置][{config_name}] 配置项 {key} 写入异常: {e}",
   "log.webconsole.config_name_key_write_fail": "[框架配置][{config_name}] 配置项 {key} 写入失败",
+  "log.webconsole.framework_config_bulk_skip_task_level_keys": "[框架配置] 配置项 {keys} 由任务配置卡片专用接口管理，整份保存已跳过（防止旧表单快照覆盖）",
   "log.webconsole.core_clear_console_o_tables": "[core清除控制台旧表] 检测到表: {existing_tables}",
   "log.webconsole.core_clear_web_conso_deletion": "[core清除网页控制台账号] 删除失败: {e}",
   "log.webconsole.core_clear_web_conso_get_table_list_fail": "[core清除网页控制台账号] 获取表列表失败: {e}",

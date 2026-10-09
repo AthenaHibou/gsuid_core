@@ -469,6 +469,18 @@ async def get_framework_config_detail(
     }
 
 
+# 整份保存（「保存配置」按钮）携带的是页面加载时的表单快照；下列 key 由任务配置卡片
+# 经 /api/provider_config/task_config/{level} 直改直存，若放行整份回写，旧快照会把
+# 用户刚在卡片上做的修改覆盖回去（生产事故：改完任务模型点保存 → 重启后配置"还原"）。
+# 备用配置（*_2nd_*）无专用端点、只能走整份保存，刻意不在此列。
+_BULK_SAVE_SKIP_KEYS = frozenset(
+    {
+        "high_level_provider_config_name",
+        "low_level_provider_config_name",
+    }
+)
+
+
 @app.post("/api/framework-config/{config_name}", summary="更新框架配置", tags=FRAMEWORK_CONFIG)
 async def update_framework_config(
     request: Request, config_name: str, data: Dict[str, Any] = Body(...), _user: Dict[str, Any] = Depends(require_auth)
@@ -477,6 +489,8 @@ async def update_framework_config(
     更新框架配置
 
     批量更新指定配置项的值。
+    主任务模型选择（high/low_level_provider_config_name）由任务配置卡片专用端点
+    管理，整份保存对它们一律跳过，防止旧表单快照覆盖卡片上的最新修改。
 
     Args:
         request: FastAPI 请求对象
@@ -498,8 +512,12 @@ async def update_framework_config(
 
     config_obj = all_config_list[full_config_name]
     is_success = False
+    skipped_keys: list[str] = []
 
     for key, value in data.items():
+        if key in _BULK_SAVE_SKIP_KEYS:
+            skipped_keys.append(key)
+            continue
         try:
             result = config_obj.set_config(key, value)
             if result:
@@ -509,10 +527,15 @@ async def update_framework_config(
         except Exception as e:
             logger.error(t("log.webconsole.config_name_key_write_exception", config_name=config_name, key=key, e=e))
 
-    if not is_success:
+    if not is_success and not skipped_keys:
         return {"status": 1, "msg": "部分或全部配置项保存失败"}
 
-    return {"status": 0, "msg": "配置已保存"}
+    msg = "配置已保存"
+    if skipped_keys:
+        logger.warning(t("log.webconsole.framework_config_bulk_skip_task_level_keys", keys="、".join(skipped_keys)))
+        msg += f"（{'、'.join(skipped_keys)} 由任务配置卡片专用接口管理，本次整份保存已跳过）"
+
+    return {"status": 0, "msg": msg}
 
 
 @app.post("/api/framework-config/{config_name}/item/{item_name}", summary="更新框架配置项", tags=FRAMEWORK_CONFIG)

@@ -29,6 +29,7 @@
   "log.webconsole.config_name_item_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {item_name}",
   "log.webconsole.config_name_key_write_exception": "[Framework Config][{config_name}] Exception while writing configuration item {key}: {e}",
   "log.webconsole.config_name_key_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {key}",
+  "log.webconsole.framework_config_bulk_skip_task_level_keys": "[Framework Config] Keys {keys} are managed by the dedicated task-config endpoints; skipped in bulk save to prevent stale form snapshots from overwriting them",
   "log.webconsole.core_clear_console_o_tables": "[core Clear Console Old Tables] Detected tables: {existing_tables}",
   "log.webconsole.core_clear_web_conso_deletion": "[core Clear Web Console Account] Deletion failed: {e}",
   "log.webconsole.core_clear_web_conso_get_table_list_fail": "[core Clear Web Console Account] Failed to get table list: {e}",
