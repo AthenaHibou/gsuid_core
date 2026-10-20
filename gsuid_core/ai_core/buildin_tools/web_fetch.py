@@ -13,7 +13,7 @@ from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
 
 
-@ai_tools(category="buildin", visible_when=context_has_url)
+@ai_tools(category="buildin", capability_domain="网络搜索", visible_when=context_has_url)
 async def web_fetch_tool(
     ctx: RunContext[ToolContext],
     url: str,

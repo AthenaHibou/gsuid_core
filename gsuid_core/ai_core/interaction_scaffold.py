@@ -584,8 +584,10 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
     return hints
 
 
-# 群聊瘦保底：按**通道能力**固定（多模态 / 事实查询 / 出图 / 调度入口），
+# 群聊瘦保底：按**通道能力**固定（多模态 / 事实查询+网页抓取 / 出图 / 调度入口），
 # 不按用户话题词扩池。list/modify 等仍靠 needs_task_tools 补域。
+# web_fetch_tool 与 web_search_tool 强绑成对（搜索→抓取是同一件事的两步），且自带
+# visible_when=context_has_url 门控——上下文无 URL 时不下发 schema，不构成噪声。
 SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
     {
         "send_message_by_ai",
@@ -594,6 +596,7 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "find_tools",
         "read_image",
         "web_search_tool",
+        "web_fetch_tool",
         "render_html_to_image",
     }
 )

@@ -45,7 +45,7 @@ def _format_results_for_model(results: list[dict]) -> str:
     return "\n".join(lines).rstrip()
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", capability_domain="网络搜索")
 async def web_search_tool(
     ctx: RunContext[ToolContext],
     query: str,
