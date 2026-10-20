@@ -269,6 +269,46 @@ def with_session(
     return wrapper  # type: ignore
 
 
+def with_read_session(
+    func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
+) -> Callable[Concatenate[Any, P], Awaitable[R]]:
+    """只读会话：SELECT 走 query_only 连接，不占用 SQLite 写信号量（上游同名接口）。
+
+    仅应用于纯查询函数。非 SQLite 方言下 pragma 为空操作；
+    rollback 兜底保证任何误写都不会落库。分支 SQLite 引擎为 NullPool，
+    连接归还即销毁，query_only 无需回置。
+    """
+
+    @wraps(func)
+    async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
+        max_retries = 3
+        last_err: BaseException | None = None
+        for attempt in range(max_retries):
+            try:
+                async with async_maker() as session:
+                    if _db_type == "sqlite":
+                        await session.execute(text("PRAGMA query_only=ON"))
+                    data = await func(self, session, *args, **kwargs)
+                    await session.rollback()
+                    return data
+            except Exception as e:
+                last_err = e
+                if _is_pool_timeout(e):
+                    logger.error(i18n_t("log.database.connect_timeout_stop", e=e))
+                    raise
+                if _is_transient_db_error(e) and attempt < max_retries - 1:
+                    logger.warning(i18n_t("log.database.retry_fail_2", p0=attempt + 1, e=e))
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise
+
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError(i18n_t("[数据库] with_read_session 未知失败"))
+
+    return wrapper  # type: ignore
+
+
 async def get_all_table_ddl(engine: AsyncEngine) -> Dict[str, str]:
     """
     异步获取数据库中所有表的 Create Table 语句 (DDL)。
