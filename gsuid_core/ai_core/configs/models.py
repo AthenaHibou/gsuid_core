@@ -580,6 +580,16 @@ def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfi
     return _get_provider_string_config(provider, config_name)
 
 
+def get_model_config_by_full_name(full_name: str) -> StringConfig:
+    """按 provider++name 全名直接取配置 StringConfig。
+
+    供模型切换（switch_model 工具）override 生效期间读取"实际在用的模型"的
+    model_support 等配置——与 get_model_by_full_name（构建模型对象）配对使用。
+    """
+    provider, config_name = parse_provider_config_name(full_name)
+    return _get_provider_string_config(provider, config_name)
+
+
 def get_provider_for_task(task_level: Literal["high", "low"]) -> str:
     """获取指定任务级别当前激活配置的 provider 类型（"openai"/"anthropic"/"gemini"）。
 

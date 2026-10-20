@@ -281,6 +281,12 @@ from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
 )
 
+# 模型切换工具 - AI 按用户要求临时切换本会话执行模型（单轮生效后自动还原）
+from gsuid_core.ai_core.buildin_tools.model_switcher import (
+    switch_model,
+    list_available_models,
+)
+
 # 文件操作工具 - artifacts 路径内的文件移动/复制/打包 zip
 from gsuid_core.ai_core.buildin_tools.file_operations import (
     copy_file,
@@ -403,6 +409,9 @@ __all__ = [
     "find_tools",
     "discover_tools",
     "list_available_tools",
+    # 模型切换工具
+    "list_available_models",
+    "switch_model",
     # 插件开发工具（plugin_developer_agent 专用）
     "scaffold_plugin",
     "validate_plugin",

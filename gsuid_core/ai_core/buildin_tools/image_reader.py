@@ -201,17 +201,39 @@ def _current_task_level(parent_session_id: str | None) -> Literal["high", "low"]
     return "high"
 
 
+def _current_override_full_name(parent_session_id: str | None) -> str | None:
+    """当前主 Agent 是否处于模型切换（switch_model）override 重跑期，是则返回 override 全名。"""
+    try:
+        if parent_session_id:
+            from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+            sess = get_ai_session_registry().get_ai_session(parent_session_id)
+            if sess is not None:
+                return getattr(sess, "_model_override_full_name", None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(t("log.buildin.image_reader_task_level_fail", error=str(e)))
+    return None
+
+
 def _current_model_supports_image(parent_session_id: str | None) -> bool:
     """当前主 Agent 的模型（按其 task_level）是否在 ``model_support`` 里声明了 image。
 
     读图有两条路：主模型**支持多模态**时应把图直接塞回会话让它原生看（无损、省一次调用）；
     不支持时才退回 ``understand_image`` 把图**转述成文字**。这里判定走哪条。
+    模型切换 override 期间按 override 模型的配置判定。
     """
     try:
-        from gsuid_core.ai_core.configs.models import get_model_config_for_task
+        from gsuid_core.ai_core.configs.models import (
+            get_model_config_for_task,
+            get_model_config_by_full_name,
+        )
 
-        task_level = _current_task_level(parent_session_id)
-        support: object = get_model_config_for_task(task_level).get_config("model_support").data
+        override = _current_override_full_name(parent_session_id)
+        if override:
+            support: object = get_model_config_by_full_name(override).get_config("model_support").data
+        else:
+            task_level = _current_task_level(parent_session_id)
+            support = get_model_config_for_task(task_level).get_config("model_support").data
         return isinstance(support, (list, str)) and "image" in support
     except Exception as e:  # noqa: BLE001 - 判定失败按「不支持」处理，退回文字转述更安全
         logger.debug(t("log.buildin.image_reader_support_fail", error=str(e)))
@@ -226,6 +248,9 @@ def _current_provider(parent_session_id: str | None) -> str:
             parse_provider_config_name,
         )
 
+        override = _current_override_full_name(parent_session_id)
+        if override:
+            return parse_provider_config_name(override)[0]
         task_level = _current_task_level(parent_session_id)
         return parse_provider_config_name(get_config_name_for_task(task_level))[0]
     except Exception as e:  # noqa: BLE001

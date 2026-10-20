@@ -89,7 +89,9 @@ from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
     get_model_by_full_name,
     get_config_name_for_task,
+    get_model_config_for_task,
     get_2nd_config_name_for_task,
+    get_model_config_by_full_name,
     get_model_fingerprint_for_task,
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
@@ -97,12 +99,41 @@ from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.utils.plugins_config.gs_config import StringConfig
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
     looks_like_provider_failure,
 )
 
 _T = TypeVar("_T")
+
+# ============ 用户指令触发的模型切换（switch_model 工具链路）============
+
+# switch_model 工具成功登记切换后抛出的**控制流信号**（非错误）：pydantic_ai 对工具的
+# 非 ModelRetry 异常原样向上传播并终止本次 generation——工具若正常返回，旧模型会继续
+# 生成并可能把回答抢先发给用户，因此用异常把 Run#1 干净地掐断在工具调用处。
+# run() 的切换包装层捕获后用目标模型重跑同一条消息（见 _do_run_with_model_switch）。
+class ModelSwitchSignal(Exception):
+    """switch_model 工具登记切换后抛出，终止当前 run 并请求换模型重跑。"""
+
+    def __init__(self, full_name: str):
+        super().__init__(full_name)
+        self.full_name = full_name
+
+
+# 模型切换重跑（Run#2）附加到 system_prompt 末尾的身份注入：新模型没有"我是被切过来的"
+# 自我意识，且它看到的消息仍是"帮我切换模型"——不注入必然回"抱歉我无法切换模型"。
+_MODEL_SWITCH_SYSTEM_SUFFIX = (
+    "\n\n[系统提示 · 仅本轮有效]\n"
+    "应用户请求，本会话已切换至模型 {target_full_name}，你就是切换后的模型本体。"
+    "切换动作已由系统完成：禁止再次调用切换工具，禁止表示\"无法切换模型\"，"
+    "也不要复述切换过程。请直接以当前身份处理用户本轮消息："
+    "若其中包含具体问题或任务，直接回答/执行；若仅为切换请求，用一句话向用户确认切换完成。"
+)
+
+# 单次 run 内允许的链式切换重跑上限（Run#2 若再次触发 switch_model 可继续换，防失控循环）
+_MAX_MODEL_SWITCH_ROUNDS = 3
+
 
 # 历史裁剪低水位比例：超过 max_history 时一次裁到 max_history * 该比例。
 # 比例越高裁剪越温和，保留更多可缓存前缀（0.85 = 仅丢弃 15% 溢出量）。
@@ -624,6 +655,16 @@ class GsCoreAIAgent:
             self.model_config_name = get_config_name_for_task(task_level)
             self.model_config_fingerprint = get_model_fingerprint_for_task(task_level)
 
+        # 用户指令触发的模型切换（switch_model 工具写入）：值为目标配置全名（provider++name）。
+        # 工具写入后抛 ModelSwitchSignal 终止当前 run，run() 的切换包装层读取并重跑，结束后清空。
+        self._pending_model_switch: Optional[str] = None
+        # 本轮 run 重跑期间生效中的 override 模型全名（仅 _do_run_with_model_switch 内非 None），
+        # 供 model_support（图片/视频支持）等"读当前实际模型配置"的判定路径感知 override。
+        self._model_override_full_name: Optional[str] = None
+        # 本轮 run 附加到 system_prompt 末尾的身份注入（模型切换重跑期告知新模型"你已被切换"），
+        # 仅存活于重跑那次 attempt，run 结束即清空，不污染会话级提示词。
+        self._run_system_prompt_suffix: str = ""
+
         # 初始化会话日志记录器：所有 Agent 恒有 logger（session_id 已在上方自动派生
         # 兜底），因此 _session_logger 非 Optional，run() 中不再需要 None 守卫。
         self._session_logger: AISessionLogger = AISessionLogger(
@@ -812,6 +853,17 @@ class GsCoreAIAgent:
         )
         return True
 
+    def _current_model_config(self) -> StringConfig:
+        """当前实际生效的模型配置：override 重跑期间读 override 配置，否则按 task_level 激活配置。
+
+        model_support（图片/视频支持）等多模态能力判定必须读"本轮真正在用的模型"——
+        否则切到不支持图片的备用模型时，图片会按旧模型的能力走错分支（直投给不支持
+        多模态的模型会 400 整轮崩）。
+        """
+        if self._model_override_full_name:
+            return get_model_config_by_full_name(self._model_override_full_name)
+        return get_model_config_for_task(self.task_level)
+
     @staticmethod
     def _is_video_item(item: UserContent) -> bool:
         """内容项是否为视频（VideoUrl 或视频类 BinaryContent）。"""
@@ -934,10 +986,11 @@ class GsCoreAIAgent:
         Returns:
             处理后的消息，可能是 str 或 list[UserContent]
         """
-        from gsuid_core.ai_core.configs.models import get_model_config_for_task
         from gsuid_core.ai_core.image_understand import understand_image
 
-        model_config = get_model_config_for_task(self.task_level)
+        # 读"当前实际生效"的模型配置（模型切换 override 期间为 override 模型），
+        # 图片/视频支持按真正在用的模型判定。
+        model_config = self._current_model_config()
         model_support: str = model_config.get_config("model_support").data
 
         # 视频先行转换——OpenAI/Anthropic 模型不接受 VideoUrl，必须在入历史前处理掉
@@ -1165,6 +1218,10 @@ class GsCoreAIAgent:
                     turn_graph=turn_graph,
                     cheap_gate=cheap_gate,
                 )
+            except ModelSwitchSignal:
+                # switch_model 工具的控制流信号：绝不能进瞬时故障重试循环（重试会用
+                # 旧模型原样重跑并再次触发信号），原样上抛给 run() 的切换包装层换模型重跑。
+                raise
             except Exception as e:
                 err_str = str(e)
                 # 自愈：过期远程图片导致的下载失败会让后续每轮都 500，先剥离历史里的 过期远程图片，
@@ -2005,14 +2062,13 @@ class GsCoreAIAgent:
                         limit=_recall_limit,
                         non_category=["self", "buildin"],
                     )
-                    # 补搜索族（瘦保底已含 web_search_tool；再补 fetch/knowledge）
+                    # 补 RAG 检索（web_fetch_tool 已随瘦保底与 web_search_tool 成对常驻，
+                    # 不再依赖意图；knowledge 走 RAG 向量库较重，仍按意图补）
                     if (_group_slim or _is_light) and intent in ("工具", "问答"):
-                        for _tn in ("web_fetch_tool", "search_knowledge"):
-                            if _tn in core_names:
-                                continue
-                            _tb = find_tool_base(_tn)
+                        if "search_knowledge" not in core_names:
+                            _tb = find_tool_base("search_knowledge")
                             if _tb is not None:
-                                core_names.add(_tn)
+                                core_names.add("search_knowledge")
                                 core_tools.append(_tb.tool)
 
                 # 附加池：先按能力族整族展开（L4），再去重/限量。 召回族内任一工具即带出整族（剔除与保底重名/族内重复）
@@ -2146,10 +2202,16 @@ class GsCoreAIAgent:
         else:
             _model_settings = None
 
+        # 模型切换重跑（Run#2）时把"你已被切换"的身份注入拼进本轮提示词；
+        # 常规 run 后缀为空串，零影响。
+        _run_system_prompt = (
+            self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。"
+        ) + self._run_system_prompt_suffix
+
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
-            system_prompt=self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。",
+            system_prompt=_run_system_prompt,
             model_settings=_model_settings,
             tools=tools,
             toolsets=_toolsets,
@@ -3102,9 +3164,74 @@ class GsCoreAIAgent:
                     cheap_gate=cheap_gate,
                 )
 
+            async def _do_run_with_model_switch():
+                """执行一轮 run 并处理 switch_model 工具触发的"换模型重跑"。
+
+                Run#1（当前模型）中途被 ModelSwitchSignal 终止时：以 override 模型重跑
+                同一条消息（Run#2）。异常路径下 self.history 未提交新消息（成功才 extend），
+                所以重跑天然回到"用户消息刚到达"的干净状态；同时给新模型注入"你已被切换"
+                的身份提示（否则它会对着"帮我切换模型"的请求回"抱歉我无法切换"）。
+                本次 run 结束（无论成败）还原模型与注入；链式切换循环支持，至多
+                _MAX_MODEL_SWITCH_ROUNDS 轮，防失控。
+                """
+                orig_model = self.model
+                # L5 检索窗口回滚基线：Run#1 装配时已把本轮用户原话记入，重跑会重复追加
+                _recent_texts_len = len(self._recent_user_texts)
+                try:
+                    for _round in range(_MAX_MODEL_SWITCH_ROUNDS):
+                        try:
+                            return await _do_run()
+                        except ModelSwitchSignal as sig:
+                            target = (sig.full_name or self._pending_model_switch or "").strip()
+                            self._pending_model_switch = None
+                            if not target:
+                                logger.warning(f"模型切换信号缺少目标，忽略（会话 {self.session_id}）")
+                                break
+                            try:
+                                self.model = get_model_by_full_name(target)
+                            except Exception as e:  # noqa: BLE001 - 目标配置加载失败：如实告知用户
+                                logger.warning(f"模型切换失败：{target} 构建失败（{e}）")
+                                self._session_logger.log_run_end()
+                                _err_text = f"⚠️ 模型切换失败：目标配置 {target} 不可用，已保持原模型"
+                                if output_type is not None:
+                                    # 结构化输出 run（SubAgent/评测）不向 bot 发文案，返回 None 与预算闸一致
+                                    return None
+                                if bot is not None:
+                                    try:
+                                        await bot.send(_err_text)
+                                    except Exception as _se:  # noqa: BLE001
+                                        logger.debug(f"切换失败提示发送失败：{_se}")
+                                    return "" if return_mode != "return" else _err_text
+                                return _err_text
+                            # 应用 override：能力判定（model_support）与身份注入同步生效
+                            self._model_override_full_name = target
+                            self._run_system_prompt_suffix = _MODEL_SWITCH_SYSTEM_SUFFIX.format(
+                                target_full_name=target
+                            )
+                            # 回滚 Run#1 已追加的 L5 用户原话，防重跑后窗口内重复
+                            del self._recent_user_texts[_recent_texts_len:]
+                            # Run#1 被 signal 终止，session 日志的 run 悬空，先闭合再重跑
+                            self._session_logger.log_run_end()
+                            logger.info(f"模型切换：会话 {self.session_id} 以 {target} 重跑本轮消息")
+                            # continue → 下一轮以 override 模型执行同一条消息
+                    logger.warning(
+                        f"模型切换重跑轮次耗尽（>{_MAX_MODEL_SWITCH_ROUNDS}），放弃执行（会话 {self.session_id}）"
+                    )
+                    return None if output_type is not None else ""
+                finally:
+                    # 还原大脑与身份注入；不关旧模型底层 client（共享进程级缓存客户端，
+                    # close 会拖垮全进程会话），交给 GC 即可
+                    self.model = orig_model
+                    self._model_override_full_name = None
+                    self._run_system_prompt_suffix = ""
+                    # 信号被意外吞掉（Run#1 正常完成）时 pending 会残留，兜底清理防跨轮污染
+                    if self._pending_model_switch is not None:
+                        logger.warning("模型切换信号未终止 Run#1，本次切换请求已忽略")
+                        self._pending_model_switch = None
+
             # 显式绑定固定模型的会话（model_config_name 为 None）不参与 provider 路由
             if self.model_config_name is None:
-                result = await _do_run()
+                result = await _do_run_with_model_switch()
                 logger.info(i18n_t("log.agent.lock_ok"))
                 return result
 
@@ -3145,7 +3272,7 @@ class GsCoreAIAgent:
                             )
                             routed_name = self.model_config_name
                     try:
-                        result = await _do_run()
+                        result = await _do_run_with_model_switch()
                         # 内层重试耗尽后返回错误字符串（非异常）：若为 provider 级故障
                         # （限流/连接/5xx），标记冷却并换路重试，而非直接返回错误给用户。
                         _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
