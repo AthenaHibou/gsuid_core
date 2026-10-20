@@ -93,6 +93,8 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    covers: Optional[List[str]] = None,
+    aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 300.0,
     approval: Optional[str] = None,
@@ -114,6 +116,11 @@ def ai_tools(
         capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。
+        covers: 可选的数据/能力覆盖面陈述列表，如 ["某数据域的报价与时间序列"]。
+            会拼进工具向量检索文本（name+docstring+covers+aliases），
+            提升跨措辞召回；不影响下发给模型的工具描述。
+        aliases: 可选的领域内同义问法列表，建议带领域前缀。
+            同样拼进工具向量检索文本，不影响下发给模型的工具描述。
         visible_when: 可选的"可见性谓词"（Phase 3 条件隐藏）。签名为
             ``(ctx: RunContext[ToolContext]) -> bool | Awaitable[bool]``。
             返回 False 时，本工具在**该 step**对模型隐藏（schema 都不下发），
@@ -343,6 +350,8 @@ def ai_tools(
             tool=tool_obj,
             context_tags=context_tags,
             capability_domain=capability_domain,
+            covers=covers,
+            aliases=aliases,
         )
 
         # 根据 category 分类注册工具

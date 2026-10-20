@@ -184,8 +184,13 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     local_tool_names: Set[str] = set(tools_map.keys())
 
     for tool_name, tool in tools_map.items():
-        # 计算哈希
-        tool_dict = {"name": tool.name, "description": tool.description}
+        # 计算哈希（covers/aliases 变更同样触发重新嵌入）
+        tool_dict = {
+            "name": tool.name,
+            "description": tool.description,
+            "covers": tool.covers,
+            "aliases": tool.aliases,
+        }
         current_hash = calculate_hash(tool_dict)
 
         # 检查是否需要更新
@@ -193,8 +198,11 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         is_modified = not is_new and existing_tools[tool_name]["hash"] != current_hash
 
         if is_new or is_modified:
-            # 生成向量：使用 name + description
+            # 生成向量：name + description + covers + aliases（上游同语义）
             desc_and_name = f"{tool_name}\n{tool.description}"
+            extra_text = "\n".join([*tool.covers, *tool.aliases])
+            if extra_text:
+                desc_and_name = f"{desc_and_name}\n{extra_text}"
 
             # 构建payload
             payload = {"name": tool.name, "description": tool.description, "_hash": current_hash}
@@ -488,7 +496,10 @@ async def search_tools_by_domain(
     """
     from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
 
-    seeds = await search_tools(query=query, limit=recall, non_category=["self", "buildin", "meta"])
+    # buildin 不排除：瘦保底会裁掉部分 buildin 工具（如 web_fetch_tool），模型经
+    # find_tools 求救时须能捞回；已在静态池的同名工具由 RetrievableToolset 按
+    # exclude_names 去重，重复"加载"是无害 no-op。self/meta 仍排除（主人专属/防自递归）。
+    seeds = await search_tools(query=query, limit=recall, non_category=["self", "meta"])
 
     out: ToolList = []
     seen_names: Set[str] = set()

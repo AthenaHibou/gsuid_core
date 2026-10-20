@@ -313,6 +313,8 @@ def _register_trigger_as_ai_tool(
     to_ai_doc: str,
     sv: Any,
     trigger_type: str,
+    covers: Optional[List[str]] = None,
+    aliases: Optional[List[str]] = None,
 ) -> None:
     """
     将一个触发器函数包装为 AI 工具并注册到 _TOOL_REGISTRY["by_trigger"]。
@@ -334,6 +336,8 @@ def _register_trigger_as_ai_tool(
         to_ai_doc: AI 工具的 docstring
         sv: SV 实例
         trigger_type: 触发器类型（command/prefix/keyword/fullmatch/suffix/regex 等）
+        covers: 数据/能力覆盖面描述，进工具向量检索文本
+        aliases: 领域内同义问法，进工具向量检索文本
     """
     # 检查AI是否启用，未启用则跳过触发器工具注册
     try:
@@ -509,6 +513,8 @@ def _register_trigger_as_ai_tool(
         description=to_ai_doc,
         plugin=plugin_name,
         tool=tool_obj,
+        covers=covers,
+        aliases=aliases,
     )
 
     if "by_trigger" not in _TOOL_REGISTRY:
