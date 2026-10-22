@@ -1952,6 +1952,10 @@ class GsCoreAIAgent:
             _addr_gated = bool(_tg.address_gated)
             _followup_detected = bool(_tg.needs_task_tools)
             _hints = interaction_scaffold.scaffold_hints_from_graph(_tg, cheap=_cheap)
+            # 酒馆档位不接 LIGHT 的“系统提示”文案：它把本轮重新标成“群聊轻量回”，
+            # 是典型的出戏元信息；tavern 的短回/工具约束已在 system + PHI 里。
+            if self.prompt_bundle is not None and self.prompt_bundle.profile == "tavern":
+                _hints = [h for h in _hints if h is not interaction_scaffold.LIGHT_MODE_HINT]
             # C-2：≥2 且比上轮增加才保留漂移提醒（hints 里可能已有，按计数裁）
             _pushes = _tg.style_push_count
             if interaction_scaffold.DRIFT_REMINDER in _hints:

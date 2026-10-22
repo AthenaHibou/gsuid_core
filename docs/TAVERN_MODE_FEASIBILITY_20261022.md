@@ -501,6 +501,9 @@ M0 已按本报告实现（`persona/tavern.py`、`PromptBundle`、`build_session
 3. **输出档位有效**：tavern 的 `（旁白）`/多段被保留，gscore 仍走 IM 清洗/拆条；单条消息模式避免把叙事拆成多条气泡。
 4. **成本**：tavern 私聊 hello 输入 8.7k tokens（gscore 13.2k），但天气轮因为工具结果/多轮请求达到 20k（gscore 同题 76k，含渲染轮）；整体没有明显 Token 劣势，延迟受模型/工具影响更大。
 5. **群聊回退正确**：`scope=private` 时群聊仍由 `build_session_prompt_bundle` 返回 gscore，不改变多用户语义。
+6. **`scope=all` 群聊可用（hybrid）**：实测群聊 `你好` 返回 12~13 字，天气问题仍调用 `web_search_tool` + 渲染，3 条气泡。群聊路径只保留多用户历史文本（其他用户发言是 gscore 的群聊特性），不再注入记忆/关系/mood/任务块；system/示例/PHI/输入前缀/输出清洗换成 tavern。它不是纯 ST 的 1:1 语义。
+
+已生成一份可用的白面鸮配置：`data/AI_Core/persona/白面鸮/tavern.json`（`scope=all`、`output_style=roleplay`、`single_message=false`，16 组示例 + 戏外工具协议 + 作者注），并把该人格切到 `prompt_profile=tavern`。
 
 ---
 
