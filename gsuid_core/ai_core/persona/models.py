@@ -4,9 +4,11 @@ Persona 数据模型模块
 定义Persona相关的数据类和模型
 """
 
-from typing import Optional
+from typing import List, Optional
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import field, dataclass
+
+from pydantic_ai.messages import ModelMessage
 
 # 支持的音频格式，按优先级排序（mp3优先）
 SUPPORTED_AUDIO_FORMATS = [".mp3", ".ogg", ".wav", ".m4a", ".flac"]
@@ -92,6 +94,29 @@ def validate_audio_type(data: bytes, extension: str) -> bool:
         return data[:4] == b"fLaC"
 
     return False
+
+
+@dataclass
+class PromptBundle:
+    """一次会话的提示词/对话形态快照。
+
+    ``gscore`` 档位沿用现有群聊 Agent 语义；``tavern`` 档位把酒馆的编排语义
+    （原生示例、PHI、干净输入、角色化输出）作为一组可切换参数。该对象由
+    ``context_assembly.build_session_prompt_bundle`` 在建会话时生成，随 session
+    存活；persona/tavern.json 变更时由 ai_router 的热重载重建。
+    """
+
+    profile: str = "gscore"
+    system_prompt: str = ""
+    # 只在本轮请求时临时拼到 self.history 前面，不写回历史、不进 session log
+    example_messages: List[ModelMessage] = field(default_factory=list)
+    # 历史之后、生成之前的近因注入（PHI / 作者注 / 当前时间）
+    post_history: str = ""
+    # 用户消息形态：im=保留 [用户发言]/关系头；roleplay=只保留角色能看到的正文
+    input_style: str = "im"
+    # 输出形态：im=剥 markdown/动作并拆 IM 气泡；roleplay=保留旁白、整段发
+    output_style: str = "im"
+    single_message: bool = False
 
 
 @dataclass

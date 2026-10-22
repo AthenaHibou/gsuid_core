@@ -760,6 +760,18 @@ async def update_persona_config(
             }
         results.append(f"keywords: {keywords}")
 
+    # 更新 prompt_profile（如果提供）
+    if "prompt_profile" in data:
+        prompt_profile = str(data["prompt_profile"])
+        success, msg = persona_config_manager.set_prompt_profile(persona_name, prompt_profile)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"prompt_profile: {prompt_profile}")
+
     # 更新 tool_packs（如果提供）
     if "tool_packs" in data:
         tool_packs = data["tool_packs"]

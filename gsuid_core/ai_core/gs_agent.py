@@ -57,6 +57,10 @@ from gsuid_core.ai_core.utils import (
     ERROR_RESULT_PREFIX,
     ERROR_CONTENT_REJECTED,
     send_chat_result,
+    set_output_style,
+    reset_output_style,
+    set_output_single_message,
+    reset_output_single_message,
     _relean_user_turn,
     fetch_video_bytes,
     _extract_run_context,
@@ -101,6 +105,7 @@ from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
+from gsuid_core.ai_core.persona.models import PromptBundle
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 from gsuid_core.ai_core.configs.provider_router import (
@@ -635,6 +640,7 @@ class GsCoreAIAgent:
         scope_key: Optional[str] = None,
         wall_clock_budget: Optional[float] = None,
         on_trace: Optional[Callable[[TraceKind, str], None]] = None,
+        prompt_bundle: Optional[PromptBundle] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -642,6 +648,9 @@ class GsCoreAIAgent:
         self.history: List[ModelMessage] = []
         self.max_history = _max_history
         self.system_prompt = system_prompt
+        # 酒馆模式（tavern）的 prompt/输入/输出形态快照；None=现有 gscore 群聊档位。
+        # 只在建会话时换档，运行期不重建（persona/tavern.json 变更由 ai_router 热重载）。
+        self.prompt_bundle = prompt_bundle
         # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）
         self.system_prompt_built_at: float = time.time()
         self.persona_name = persona_name  # 用于热重载检查
@@ -736,6 +745,26 @@ class GsCoreAIAgent:
         不能以返回值判断"本轮说过话"，须读本属性（评审修复 F1）。
         """
         return bool(self._run_sent_texts)
+
+    @property
+    def input_style(self) -> str:
+        """用户消息形态：gscore=im；tavern=roleplay（不包 [用户发言]/关系头）。"""
+        return self.prompt_bundle.input_style if self.prompt_bundle is not None else "im"
+
+    @property
+    def output_style(self) -> str:
+        """输出形态：gscore=im；tavern=roleplay（保留旁白/段落，不拆 IM 气泡）。"""
+        return self.prompt_bundle.output_style if self.prompt_bundle is not None else "im"
+
+    def _wrap_user_text(self, text: str) -> str:
+        """按当前档位包 user 正文。
+
+        gscore 需要 ``[用户发言]`` 作为历史/工具轮的稳定锚点；tavern 下这层头是
+        出戏元信息，直接给正文，让模型看到的是“对方说的话”。
+        """
+        if self.input_style == "roleplay":
+            return text
+        return f"[用户发言]\n{text}"
 
     def _emit_trace(self, kind: TraceKind, text: str) -> None:
         """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
@@ -1094,7 +1123,7 @@ class GsCoreAIAgent:
             result: list[UserContent] = []
             for item in content_list:
                 if isinstance(item, str):
-                    result.append(f"[用户发言]\n{item}")
+                    result.append(self._wrap_user_text(item))
                 elif isinstance(item, ImageUrl):
                     # Fix-07 兜底：入历史前再次确认远程 URL 已物化为 base64；
                     # 若物化失败（仍为 http(s) URL），跳过该图片，避免把过期
@@ -1127,7 +1156,7 @@ class GsCoreAIAgent:
                 text_parts.append(image_text)
 
         combined = "\n".join(text_parts) if text_parts else ""
-        return f"[用户发言]\n{combined}"
+        return self._wrap_user_text(combined)
 
     async def _summarize_image_description(
         self,
@@ -1849,7 +1878,7 @@ class GsCoreAIAgent:
         if isinstance(user_message, Sequence) and not isinstance(user_message, str):
             final_user_message = await self._prepare_user_message(list(user_message))
         else:
-            final_user_message = f"[用户发言]\n{user_message}"
+            final_user_message = self._wrap_user_text(user_message)
 
         # history 只存精简 user turn，避免 rag 快照逐轮累积
         _lean_user_message: Union[str, List[UserContent]] = (
@@ -2334,6 +2363,17 @@ class GsCoreAIAgent:
                     )
                 )
 
+        _bundle = self.prompt_bundle
+        _history_for_model: List[ModelMessage] = self.history
+        if _bundle is not None and _bundle.example_messages:
+            # 示例只在请求时临时拼在真实历史之前：不写回 self.history、不进 session log，
+            # 也不会被 extract_history 的历史裁剪动到。
+            _history_for_model = [*_bundle.example_messages, *self.history]
+        # 输出档位：tavern 保留角色化段落；gscore 继续 IM 清洗/拆条。
+        _style_token = set_output_style(self.output_style)
+        _single_token = set_output_single_message(_bundle.single_message if _bundle is not None else False)
+        _phi_injected = False
+
         try:
             logger.info(i18n_t("log.agent.iter_start"))
             logger.info(i18n_t("log.agent.current_history", p0=len(self.history)))
@@ -2341,7 +2381,7 @@ class GsCoreAIAgent:
             async with _agent.iter(
                 final_user_message,
                 deps=context,  # type: ignore[arg-type]
-                message_history=self.history,
+                message_history=_history_for_model,
                 usage_limits=limits,
             ) as agent_run:
                 # 遍历每一步 Node
@@ -2356,6 +2396,15 @@ class GsCoreAIAgent:
                         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
                         self._session_logger.log_node_transition("ModelRequestNode")
+
+                        # 酒馆模式：历史之后、生成之前的近因注入（PHI/作者注/当前时间）。
+                        # 只在本轮第一次模型请求前注入一次；工具循环不重复。
+                        if not _phi_injected and _bundle is not None and _bundle.profile == "tavern":
+                            _phi_body = _bundle.post_history.strip()
+                            _time_line = f"[当前时间：{time.strftime('%Y-%m-%d %H:%M:%S')}]"
+                            _phi_text = f"{_phi_body}\n\n{_time_line}".strip() if _phi_body else _time_line
+                            node.request.parts = [*node.request.parts, UserPromptPart(content=_phi_text)]
+                            _phi_injected = True
 
                         # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
                         _wall_budget = (
@@ -3112,6 +3161,10 @@ class GsCoreAIAgent:
         # 瞬时故障（超时/网络/5xx/529 等）一律不在此捕获，向上抛给 _execute_run
         # 统一重试；download image 自愈与错误文案/统计也收敛到 _execute_run。
         finally:
+            # 还原输出档位 contextvar，避免本轮 tavern 的 roleplay 形态泄漏到同一 Task
+            # 之后的其他发送（如主动消息/子代理）。
+            reset_output_single_message(_single_token)
+            reset_output_style(_style_token)
             # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
             if _budget_scope_token is not None:
                 _current_budget_scope.reset(_budget_scope_token)
@@ -3417,6 +3470,7 @@ def create_agent(
     scope_key: Optional[str] = None,
     wall_clock_budget: Optional[float] = None,
     on_trace: Optional[Callable[[str, str], None]] = None,
+    prompt_bundle: Optional[PromptBundle] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -3439,6 +3493,7 @@ def create_agent(
         on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ {"thinking","tool"}（tool 的 text 为
             `"<工具名>|<参数JSON>"`）。宿主用它把模型推理与工具调用实时呈现给用户
             （如前端「思考过程」折叠块）。旁路钩子，异常会被吞掉，不影响 run
+        prompt_bundle: 会话提示词/对话形态快照（gscore / tavern）；None=现有 gscore 档位。
 
     Returns:
         PydanticAIAgent 实例
@@ -3462,6 +3517,7 @@ def create_agent(
         scope_key=scope_key,
         wall_clock_budget=wall_clock_budget,
         on_trace=on_trace,
+        prompt_bundle=prompt_bundle,
     )
 
 

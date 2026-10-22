@@ -14,11 +14,14 @@
 """
 
 import asyncio
-from typing import List, Tuple, Optional
+from typing import TYPE_CHECKING, List, Tuple, Optional
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.persona.models import PromptBundle
 
 # 软触发（免唤醒续聊）的默认偏沉默提示——生产/评测共用同一文案
 SOFT_TRIGGER_NOTE = (
@@ -97,6 +100,26 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
         group_description=group_description or None,
         extra_stable_context=extra_stable_context or None,
     )
+
+
+async def build_session_prompt_bundle(event: Event, persona_name: str) -> "PromptBundle":
+    """建会话时的提示词/对话形态快照（gscore / tavern 双档位）。
+
+    gscore 档位保持现有行为不变；tavern 档位读取 ``persona/<name>/tavern.json``，
+    默认只在私聊生效（scope=private），群聊回退 gscore，避免破坏多用户群聊语义。
+    """
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.models import PromptBundle
+    from gsuid_core.ai_core.persona.tavern import build_tavern_bundle
+
+    profile = str(persona_config_manager.get_config(persona_name).get_config("prompt_profile").data)
+    if profile == "tavern":
+        bundle = await build_tavern_bundle(event, persona_name)
+        if bundle is not None:
+            return bundle
+
+    prompt = await build_session_system_prompt(event, persona_name)
+    return PromptBundle(profile="gscore", system_prompt=prompt)
 
 
 async def assemble_dynamic_context(

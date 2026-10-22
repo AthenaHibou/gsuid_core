@@ -25,7 +25,9 @@ def test_both_entries_consume_shared_assembly() -> None:
     for name, src in [("handle_ai", handle_ai), ("chat_with_history_api", endpoint)]:
         assert "assemble_dynamic_context(" in src, f"{name} 不再消费共享动态装配（漂移回手工复刻）"
     for name, src in [("ai_router", router), ("chat_with_history_api", endpoint)]:
-        assert "build_session_system_prompt(" in src, f"{name} 不再消费共享 system prompt 装配"
+        assert (
+            "build_session_prompt_bundle(" in src or "build_session_system_prompt(" in src
+        ), f"{name} 不再消费共享 system prompt 装配"
     # 手工复刻的标志物：装配段特有的**拼接代码**不允许出现在入口文件里（注释提及不算）
     for name, src in [("handle_ai", handle_ai), ("chat_with_history_api", endpoint)]:
         assert 'f"【长期记忆】' not in src and "【长期记忆】\\n" not in src, f"{name} 手工拼接记忆块=装配漂移"

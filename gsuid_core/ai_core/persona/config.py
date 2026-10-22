@@ -58,6 +58,13 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "prompt_profile": GsStrConfig(
+        "对话模式",
+        "gscore=群聊 Agent 模式（现状）；tavern=酒馆角色模式（私聊优先，"
+        "读取 persona/tavern.json 的 card/main prompt/examples/PHI；群聊默认仍走 gscore）",
+        "gscore",
+        options=["gscore", "tavern"],
+    ),
     # AgentNode 同构：persona 投影节点的工具装配声明（GSC 模板 append-only 自动升级）
     "tool_packs": GsListStrConfig(
         "工具能力族",
@@ -315,6 +322,28 @@ class PersonaConfigManager(ConfigSetManager):
         else:
             return False, "配置写入失败"
 
+    def set_prompt_profile(self, persona_name: str, profile: str) -> tuple[bool, str]:
+        """切换对话档位：gscore（群聊 Agent）/ tavern（酒馆角色）。
+
+        切换写 config 后，ai_router 的 persona mtime 检测会在下一次消息重建 session；
+        不要在运行中的 session 上原地切换：两档的 message 形态/示例/输出清洗不同，
+        混在同一条历史里会让模型既看到 [用户发言] 又看到酒馆示例。
+        """
+        if profile not in ("gscore", "tavern"):
+            return False, f"无效的对话模式: {profile}"
+        config = self.get_config(persona_name)
+        success = config.set_config("prompt_profile", profile)
+        if success:
+            logger.info(
+                t(
+                    "log.persona.personaconfig_updated_name_profile",
+                    persona_name=persona_name,
+                    profile=profile,
+                )
+            )
+            return True, "ok"
+        return False, "配置写入失败"
+
     def set_tool_packs(self, persona_name: str, tool_packs: List[str]) -> tuple[bool, str]:
         """
         设置 Persona 挂载的工具能力族
@@ -469,8 +498,10 @@ class PersonaConfigManager(ConfigSetManager):
             "target_groups": config.get_config("target_groups").data,
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
+            "prompt_profile": config.get_config("prompt_profile").data,
             "tool_packs": config.get_config("tool_packs").data,
             "tool_names": config.get_config("tool_names").data,
+            "pre_tool_expressions": config.get_config("pre_tool_expressions").data,
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:

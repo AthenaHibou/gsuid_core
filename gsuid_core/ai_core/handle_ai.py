@@ -259,6 +259,11 @@ async def handle_ai_chat(
 
             # 步骤 2: 获取 AI Session（意图分类需要上轮是否用过工具）
             session = await get_ai_session(event)
+            # 酒馆档位：tavern 的“完整语义”（清洁输入/无自动记忆注入/整段输出）只在私聊启用；
+            # 群聊默认仍由 build_session_prompt_bundle 回退 gscore（scope=private）。
+            _bundle = session.prompt_bundle
+            _tavern_profile = _bundle is not None and _bundle.profile == "tavern"
+            _tavern_private = _tavern_profile and not event.group_id
 
             # TurnGraph 一等公民：结构只算一次，门与装配共用
             from gsuid_core.ai_core.interaction_scaffold import (
@@ -367,6 +372,7 @@ async def handle_ai_chat(
             user_messages = await prepare_content_payload(
                 event,
                 favorability=favorability,
+                profile="tavern" if _tavern_profile else "gscore",
             )
 
             # 第二层：智能摘要（在安全范围内对长文本进行摘要）
@@ -390,16 +396,22 @@ async def handle_ai_chat(
                         user_messages[0] = summarized
                 logger.info(t("log.ai.gscore_summarization_summary_length", p0=len(summarized)))
 
-            # 时间放在本轮发言块末尾（摘要之后），与正文同段、在 rag 动态上下文之前
+            # 时间放在本轮发言块末尾（摘要之后），与正文同段、在 rag 动态上下文之前。
+            # tavern 由 agent 在 PHI 里注入当前时间，避免 user 正文混入系统元信息。
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
+            if (
+                not _tavern_profile
+                and isinstance(user_messages, list)
+                and len(user_messages) > 0
+                and isinstance(user_messages[0], str)
+            ):
                 user_messages[0] += f"\n[当前时间：{current_time}]"
 
             # 步骤 5: 记忆上下文（Memory Retrieval）
             # 基于群组/用户ID检索相关记忆，用于个性化响应
             memory_context_text = ""
             is_enable_memory: bool = ai_config.get_config("enable_memory").data
-            if is_enable_memory and memory_config.enable_retrieval:
+            if is_enable_memory and memory_config.enable_retrieval and not _tavern_private:
                 # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索， 节省向量搜索 + Reranker 开销；
                 if not _should_retrieve_memory(query, intent, str(event.user_id)):
                     logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
@@ -497,21 +509,26 @@ async def handle_ai_chat(
                     break
 
             mood_key = str(event.group_id) if event.group_id else str(event.user_id)
-            full_context, has_actionable = await assemble_dynamic_context(
-                query=query,
-                user_id=str(event.user_id),
-                bot_id=bot_id,
-                persona_name=session.persona_name,
-                mood_key=mood_key,
-                group_id=str(event.group_id) if event.group_id else None,
-                favorability=favorability,
-                history_context=rag_context,
-                memory_context_text=memory_context_text,
-                soft_triggered=soft_triggered,
-                intent=intent,
-                recent_report_titles=_recent_report_titles,
-                prev_turn_used_tools=_prev_turn_used_tools,
-            )
+            if _tavern_private:
+                # 酒馆私聊：不注入 mood/关系/记忆/任务/软触发这些出戏块。模型需要
+                # 记忆或任务时自己调工具；把“像一个人说话”放在“每轮提醒它是 Agent”之前。
+                full_context, has_actionable = "", False
+            else:
+                full_context, has_actionable = await assemble_dynamic_context(
+                    query=query,
+                    user_id=str(event.user_id),
+                    bot_id=bot_id,
+                    persona_name=session.persona_name,
+                    mood_key=mood_key,
+                    group_id=str(event.group_id) if event.group_id else None,
+                    favorability=favorability,
+                    history_context=rag_context,
+                    memory_context_text=memory_context_text,
+                    soft_triggered=soft_triggered,
+                    intent=intent,
+                    recent_report_titles=_recent_report_titles,
+                    prev_turn_used_tools=_prev_turn_used_tools,
+                )
             # 活跃任务可能抬档 full（避免 light 丢掉 Kanban）
             _cheap = decide_cheap_gate(
                 _turn_graph,

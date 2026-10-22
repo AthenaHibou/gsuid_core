@@ -302,31 +302,40 @@ ST 的 group chat 是“多角色 + 单用户”，gscore 是“单角色 + 多�
 
 ### 5.2 配置
 
-建议 per-persona 配置（`persona/<name>/config.json`，模板追加字段，自动升级）：
+M0 实际落地的拆分：
+
+`persona/<name>/config.json` 只加一个开关：
 
 ```json
 {
-  "prompt_profile": "tavern",
-  "tavern": {
-    "scope": "private",
-    "main_prompt": "Write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}.",
-    "post_history_instructions": "[戏外] 你可以调用工具……",
-    "author_note": {
-      "text": "保持短句，不要客服腔。",
-      "depth": 0,
-      "role": "system",
-      "frequency": 1
-    },
-    "examples_in_history": true,
-    "output_style": "roleplay",
-    "single_message": true
-  }
+  "prompt_profile": "tavern"
 }
 ```
 
-角色卡本体放 `persona/<name>/card.json`（V2/V3 原样或规范化后的内部格式）；`persona.md` 继续作为兼容/投影文件（AgentNode 的 `prompt` 仍读它），可以由卡片 `description + personality + scenario` 生成。
+角色卡/编排内容放同目录的 `tavern.json`（缺省时 `description` 回退 `persona.md`）：
 
-> 实现细节：现有 `persona/config.py` 是 `GSC` 模板 + append-only 自动升级，嵌套 `tavern` 对象建议拆成 `tavern_*` 顶层字段（`tavern_scope` / `tavern_main_prompt` / `tavern_phi` / `tavern_author_note` …），复用 `GsStrConfig` / `GsDictConfig`，比引入新的嵌套模板更稳。
+```json
+{
+  "name": "白面鸮",
+  "main_prompt": "请以「{{char}}」的身份，写出你在当前对话中的下一条回复。",
+  "mes_example": "<START>\n{{user}}: 在吗\n{{char}}: 在\n{{char}}: 说吧\n<START>\n{{user}}: 今天好累\n{{char}}: 那就别动了\n{{char}}: ……我也困\n",
+  "post_history_instructions": "[戏外] 天气/新闻等事实问题先用 web_search_tool，再用角色口吻说结论；示例只校准语气，不代表可以跳过工具。",
+  "author_note": {"text": "保持短句，不要客服腔。", "depth": 0},
+  "scope": "private",
+  "output_style": "roleplay",
+  "single_message": true
+}
+```
+
+- `scope=private`（默认）：私聊走 tavern，群聊回退 gscore；`scope=all` 才在群聊也走 tavern（hybrid，仍保留群历史文本）。
+- `mes_example`：`<START>` 分块、`{{user}}:` / `{{char}}:` 前缀、多行归并；连续同角色会合并，user 开头/assistant 结尾。
+- `post_history_instructions` + `author_note`：拼成 PHI，在历史之后、生成之前注入。
+- `description` / `personality` / `scenario`：可选；不填时用 `persona.md`。
+- `output_style=roleplay`：保留旁白/段落；`single_message=true`：整段一条，不拆 IM 气泡。
+
+`persona.md` 继续作为兼容/投影文件（AgentNode 的 `prompt` 仍读它）；M1 导入 V2/V3 卡时，把卡片字段规范化到 `tavern.json` 即可。
+
+> 实现细节：`persona/config.py` 是 `GSC` 模板 + append-only 自动升级；`tavern.json` 是独立 sidecar，避免把长文本/示例塞进 config 模板，也方便 M1 直接由卡片生成。
 
 ### 5.3 切换与热重载
 
@@ -335,9 +344,9 @@ ST 的 group chat 是“多角色 + 单用户”，gscore 是“单角色 + 多�
 - **热重载**：卡片/配置 mtime 进入 `_check_persona_changed` 的检测范围；`build_session_prompt_bundle` 返回新的 bundle。
 - **可观测性**：session log 的 metadata 增加 `prompt_profile` / `profile_version`，A/B 和排障时能区分。
 
-### 5.4 建议的内部结构
+### 5.4 内部结构
 
-不要把 `if tavern:` 散落到 20 个文件。建议：
+M0 先落成单文件 `ai_core/persona/tavern.py`（配置解析/示例/提示词/PHI 约 300 行），避免过早拆包；M1 导入 V2/V3/PNG/CHARX 时再按下面的边界拆分：
 
 ```
 ai_core/persona/tavern/
@@ -354,13 +363,13 @@ ai_core/persona/tavern/
 ```python
 @dataclass
 class PromptBundle:
+    profile: Literal["gscore", "tavern"]
     system_prompt: str
     example_messages: list[ModelMessage]
-    post_history: str | None
-    author_note: AuthorNote | None
+    post_history: str          # PHI + Author's Note(depth 0)
     input_style: Literal["im", "roleplay"]
     output_style: Literal["im", "roleplay"]
-    profile: Literal["gscore", "tavern"]
+    single_message: bool
 ```
 
 - `context_assembly.build_session_prompt_bundle(event, persona_name) -> PromptBundle`：唯一装配点；`build_session_system_prompt` 保留为返回 `.system_prompt` 的兼容包装。
@@ -471,6 +480,25 @@ class PromptBundle:
 - 更完整的宏/装饰器（V3 `@@depth` 等）。
 
 **总量**：M0 ~400-700 行；M1 ~800-1,200 行；M2 ~2,000-3,000 行。单人熟悉代码的前提下，MVP 1~2 周，完整 6~8 周。
+
+### 7.1 M0 实测（2026-10-22，已落地）
+
+M0 已按本报告实现（`persona/tavern.py`、`PromptBundle`、`build_session_prompt_bundle`、输出档位 ContextVar、`prompt_profile` 配置/API），并在私聊用 `mimo-v2.6-flash` 跑通：
+
+| 用例 | gscore | tavern |
+|---|---|---|
+| “你好” | `在。说吧，博士`（7 字，1 条，12.6s） | `嗯，我在 / 有事说事`（9 字，1 条，20.3s） |
+| “今天好累” | `那就别动了 / ……我也差不多，瘫着回你消息`（19 字，2 条） | `那就躺着 / 被子盖好 / 手机放下睡`（15 字，1 条） |
+| “帮我查明天上海天气” | 调 `web_search_tool` + 渲染，3 条/33 字/26.5s | 调 `web_search_tool`，2 条/44 字/63.4s |
+| 群聊（scope=private） | 正常 gscore | **回退 gscore**，未破坏群聊 |
+
+关键发现：
+
+1. **示例会教模型跳过工具**。初版 `mes_example` 里有一条“问天气 → 直接回答有雨”的示例，模型在真实天气问题上直接复用示例、不调工具。把示例里的天气问答删掉，并在 system + PHI 里写死“示例只校准语气、事实问题必须先调用工具、天气用 `web_search_tool`”后，同一问题正确调用 `web_search_tool`。
+2. **工具名要显式写出来**。只说“可以调用工具”不够，模型会认为自己“没有实时天气工具”；写出 `web_search_tool` / `web_fetch_tool` / `query_user_memory` / `find_tools` 后命中率明显提高。
+3. **输出档位有效**：tavern 的 `（旁白）`/多段被保留，gscore 仍走 IM 清洗/拆条；单条消息模式避免把叙事拆成多条气泡。
+4. **成本**：tavern 私聊 hello 输入 8.7k tokens（gscore 13.2k），但天气轮因为工具结果/多轮请求达到 20k（gscore 同题 76k，含渲染轮）；整体没有明显 Token 劣势，延迟受模型/工具影响更大。
+5. **群聊回退正确**：`scope=private` 时群聊仍由 `build_session_prompt_bundle` 返回 gscore，不改变多用户语义。
 
 ---
 

@@ -26,7 +26,7 @@ from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from .persona import persona_config_manager
 from .gs_agent import GsCoreAIAgent, create_agent
 from .resource import PERSONA_PATH
-from .context_assembly import build_session_system_prompt
+from .context_assembly import build_session_prompt_bundle
 
 # Persona 文件的 mtime 缓存，用于检测热重载
 _persona_mtime_cache: dict[str, float] = {}
@@ -103,7 +103,9 @@ async def _maybe_refresh_stable_prompt(session: GsCoreAIAgent, event: Event, per
         return
     session.system_prompt_built_at = time.time()
 
-    session.system_prompt = await build_session_system_prompt(event, persona_name)
+    bundle = await build_session_prompt_bundle(event, persona_name)
+    session.system_prompt = bundle.system_prompt
+    session.prompt_bundle = bundle
     logger.debug(t("log.ai.ai_router_stable_prefix_ttl_ok", p0=session.session_id))
 
 
@@ -215,11 +217,12 @@ async def _get_or_create_ai_session(
 
     # O-3：persona + 群简介 + 慢变稳定前缀（self_model/群画像）→ system_prompt，
     # 装配统一走 context_assembly（评测端点同源）；活跃会话由 _maybe_refresh_stable_prompt 按 TTL 刷新。
-    base_persona = await build_session_system_prompt(event, persona_name)
+    prompt_bundle = await build_session_prompt_bundle(event, persona_name)
     _persona_mtime_cache[persona_name] = _get_persona_mtime(persona_name)
 
     session = create_agent(
-        system_prompt=base_persona,
+        system_prompt=prompt_bundle.system_prompt,
+        prompt_bundle=prompt_bundle,
         persona_name=persona_name,
         create_by="Chat",
         task_level="high",

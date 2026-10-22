@@ -4,6 +4,7 @@ import json
 import base64
 import random
 import asyncio
+import contextvars
 from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
 
 import httpx
@@ -37,6 +38,38 @@ from gsuid_core.ai_core.const import (
 )
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
+
+# 输出档位（per-run ContextVar）：gscore 走 IM 清洗/拆条；tavern 保留角色化段落。
+# 放在 ContextVar 而不是给 send_chat_result 加参数，是为了不逐个改 12 个调用点，
+# 且 send_message_by_ai 等工具在 run 的 Task 上下文里自然继承。
+_OUTPUT_STYLE: contextvars.ContextVar[str] = contextvars.ContextVar("ai_output_style", default="im")
+_OUTPUT_SINGLE_MESSAGE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ai_output_single_message", default=False
+)
+
+
+def set_output_style(style: str) -> contextvars.Token[str]:
+    return _OUTPUT_STYLE.set("roleplay" if style == "roleplay" else "im")
+
+
+def reset_output_style(token: contextvars.Token[str]) -> None:
+    _OUTPUT_STYLE.reset(token)
+
+
+def get_output_style() -> str:
+    return _OUTPUT_STYLE.get()
+
+
+def set_output_single_message(single: bool) -> contextvars.Token[bool]:
+    return _OUTPUT_SINGLE_MESSAGE.set(bool(single))
+
+
+def reset_output_single_message(token: contextvars.Token[bool]) -> None:
+    _OUTPUT_SINGLE_MESSAGE.reset(token)
+
+
+def get_output_single_message() -> bool:
+    return _OUTPUT_SINGLE_MESSAGE.get()
 
 # 表情包标记正则：兼容全角/半角冒号，以及前后任意数量的反引号包裹
 # 例如：<meme: 困>  `<meme：困>`  ``<meme: 开心>``
@@ -573,6 +606,7 @@ async def prepare_content_payload(
     task_level: Literal["high", "low"] = "high",
     favorability: Optional[int] = None,
     favorability_zone: Optional[str] = None,
+    profile: Literal["gscore", "tavern"] = "gscore",
 ) -> Sequence[UserContent]:
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
@@ -589,6 +623,7 @@ async def prepare_content_payload(
         task_level: 任务级别
         favorability: 当前用户好感度 (可选)
         favorability_zone: 好感度区间描述 (可选)
+        profile: gscore=带关系/主人/消息头；tavern=只给角色能看到的正文
 
     Returns:
         content payload 列表（惰性模式仅含文本；直接模式可能含 ImageUrl）
@@ -606,23 +641,28 @@ async def prepare_content_payload(
     if ev.sender:
         nickname = ev.sender.get("nickname") or ev.sender.get("card") or None
 
-    # 叙事性关系描述（Bug-01 + Prompt-2.2: 替代数字+区间标签）
-    relationship_desc = _build_relationship_description(favorability, nickname, str(ev.user_id))
-    current_turn_header = f"{relationship_desc}\n"
-
-    # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
-    # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它，别在此写字面量）
     from gsuid_core.ai_core.interaction_scaffold import DIRECT_MARKER, AT_OTHER_MARKER
 
-    is_at_me = getattr(ev, "is_tome", False) or (ev.user_type == "direct")
-    if is_at_me:
-        current_turn_header += f"{DIRECT_MARKER}\n"
+    if profile == "tavern":
+        # 酒馆模式：只保留“谁在说”的最小信息；关系/主人/时间/记忆都走 system 或 PHI。
+        # 群聊仍加名字前缀，否则多用户历史无法区分说话人。
+        current_turn_header = f"{nickname}: " if ev.group_id and nickname else ""
+    else:
+        # 叙事性关系描述（Bug-01 + Prompt-2.2: 替代数字+区间标签）
+        relationship_desc = _build_relationship_description(favorability, nickname, str(ev.user_id))
+        current_turn_header = f"{relationship_desc}\n"
 
-    current_turn_header += "--- 消息 ---\n"
+        # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
+        # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它，别在此写字面量）
+        is_at_me = getattr(ev, "is_tome", False) or (ev.user_type == "direct")
+        if is_at_me:
+            current_turn_header += f"{DIRECT_MARKER}\n"
+
+        current_turn_header += "--- 消息 ---\n"
 
     text = current_turn_header
     if not ev.text:
-        text += "用户没有发送文本内容。"
+        text += "（没有说话）" if profile == "tavern" else "用户没有发送文本内容。"
     else:
         # 输入侧安全标注（§B.3-2）：伪造工具返回降权。只加标注、不改原意；
         # 受 content_guard_enable 开关控制。低俗/钓鱼防线在 system prompt 合规层。
@@ -761,6 +801,20 @@ def _strip_persona_markdown(text: str) -> str:
     text = re.sub(r"(?m)^[ \t]*[（(][^（）()]{10,}[）)][ \t]*\n?", "", text)
     text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.M)  # 标题
     text = re.sub(r"^\s{0,3}[-*>]\s+", "", text, flags=re.M)  # 列表 / 引用
+    return text
+
+
+def _strip_roleplay_markup(text: str) -> str:
+    """角色扮演输出的轻量清洗：去 markdown 标记，但**保留**旁白/段落/括号内容。
+
+    与 :func:`_strip_persona_markdown` 的区别只在“是否删整行括号旁白”和“是否拆条”：
+    tavern 模式下 ``（沉默了一会儿）`` / 多段叙事是角色表达的一部分，不能整行删。
+    """
+    if _looks_like_tool_table(text):
+        return text
+    text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)  # **x** / *x* → x
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.M)
+    text = re.sub(r"^\s{0,3}[-*>]\s+", "", text, flags=re.M)
     return text
 
 
@@ -1295,8 +1349,11 @@ async def send_chat_result(
     # （_strip_persona_markdown 会毁掉表格/标题，出图必须用这份未剥离的原文）。
     md_source: str = MEME_TAG_PATTERN.sub("", text).strip()
 
+    # 输出档位：tavern 保留旁白/段落；gscore 继续走 IM 清洗与拆条。
+    _style = get_output_style()
+
     # 闲聊/人格回复剥离 markdown 与 *动作* 旁白（工具表格/代码块自动豁免，见该函数）。
-    clean_text: str = _strip_persona_markdown(md_source)
+    clean_text: str = _strip_roleplay_markup(md_source) if _style == "roleplay" else _strip_persona_markdown(md_source)
 
     # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把 \n\n 也压成空格
     # 导致下方拆条切不出多条 "连发多条短句"退化成一整段。
@@ -1363,20 +1420,26 @@ async def send_chat_result(
 
     # 长 markdown 整篇出图（防拆条刷屏，2026-07-15）：用未剥离的 md_source 渲染，失败降级回拆条。
     # OOC 兜底命中时（clean_text 已换成短兜底文本）不出图。判据/开关见 _should_render_markdown_image。
-    if not _ooc_replaced and _should_render_markdown_image(md_source):
+    if _style != "roleplay" and not _ooc_replaced and _should_render_markdown_image(md_source):
         if await _try_render_markdown_image(md_source, bot, extra_metadata):
             await _send_trailing_artifacts()
             return
 
-    # 拆条：空行优先；无空行的短句分行也切成连发（见 _split_chat_bubbles）
-    blocks = _split_chat_bubbles(clean_text)
+    # 拆条：空行优先；无空行的短句分行也切成连发（见 _split_chat_bubbles）。
+    # tavern 默认整段一条：角色扮演的段落/旁白被拆成多条 IM 气泡会破坏叙事。
+    if _style == "roleplay" and get_output_single_message():
+        blocks = [clean_text]
+    else:
+        blocks = _split_chat_bubbles(clean_text)
 
     for _i, block in enumerate(blocks):
         if not block.strip():
             continue
 
-        # 闲聊短句去掉结尾句号（问号/感叹号/长句不动；见 _strip_casual_period）
-        block = _strip_casual_period(block)
+        # 闲聊短句去掉结尾句号（问号/感叹号/长句不动；见 _strip_casual_period）。
+        # tavern 下保留原句：句末句号是角色语气的一部分，不能按 IM 习惯统一抹掉。
+        if _style != "roleplay":
+            block = _strip_casual_period(block)
         if not block:
             continue
 
