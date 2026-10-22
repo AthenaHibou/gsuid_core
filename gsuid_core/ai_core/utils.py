@@ -2,6 +2,7 @@ import os
 import re
 import json
 import base64
+import random
 import asyncio
 from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
 
@@ -754,9 +755,10 @@ def _strip_persona_markdown(text: str) -> str:
     if _looks_like_tool_table(text):
         return text
     text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)  # **x** / *x* → x
-    # 整行舞台旁白：整行仅一个 （…） 且括号内 ≥4 字（小说式动作/神态描写），连换行一起删。
-    # 阈值 4 放过 （笑）（误）（脸红） 这类真·口语 tone，只清"（眼睛弯成月牙）"式叙事旁白。
-    text = re.sub(r"(?m)^[ \t]*[（(][^（）()]{4,}[）)][ \t]*\n?", "", text)
+    # 整行舞台旁白：整行仅一个 （…），且括号内 ≥10 字（小说式动作/神态叙事），连换行一起删。
+    # 阈值 10 而不是 4：4 会把"（揉揉眼睛）""（打了个哈欠）"这类**口语动作前摇**也删掉——
+    # 而人格卡明确要求工具前摇可以用这种短动作，删了等于把模型刚写的人味擦掉。
+    text = re.sub(r"(?m)^[ \t]*[（(][^（）()]{10,}[）)][ \t]*\n?", "", text)
     text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.M)  # 标题
     text = re.sub(r"^\s{0,3}[-*>]\s+", "", text, flags=re.M)  # 列表 / 引用
     return text
@@ -1148,6 +1150,79 @@ async def _try_render_markdown_image(
     return True
 
 
+# ── 拆条 / 打字节奏（拟人化呈现层，见 docs/HUMANNESS.md §2.7） ──────────
+_CHAT_BUBBLE_MAX_LINES = 4
+_CHAT_BUBBLE_MAX_LINE_CHARS = 34
+_CHAT_BUBBLE_MAX_TOTAL = 180
+_LIST_LINE_RE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.、)])\s+")
+
+
+def _split_chat_bubbles(text: str) -> List[str]:
+    """把一段台词切成"要连发几条消息"。
+
+    优先按空行切（模型被要求用空行分隔）。没有空行时再识别"短句分行"：
+    2~4 行、每行都短、且不是代码/表格/列表——人在 IM 里就是这样一条条发的，
+    合并成一坨长文本反而不像人。判据保守，任一条件不满足就原样当一条。
+
+    刻意不依赖业务词：只吃"形状"（行数/行长/是否列表/是否代码），
+    避免把技术回答里的分步说明误切。
+    """
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if len(blocks) != 1:
+        return blocks
+
+    body = blocks[0]
+    if "```" in body or "|" in body or _LIST_LINE_RE.search(body):
+        return blocks
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if not (2 <= len(lines) <= _CHAT_BUBBLE_MAX_LINES):
+        return blocks
+    if any(len(ln) > _CHAT_BUBBLE_MAX_LINE_CHARS for ln in lines):
+        return blocks
+    if sum(len(ln) for ln in lines) > _CHAT_BUBBLE_MAX_TOTAL:
+        return blocks
+    return lines
+
+
+def _typing_delay(chars: int, index: int) -> float:
+    """按字数估"正在打字"的时间：中文约 6 字/秒，带 ±35% 抖动；首条略快。
+
+    固定延迟最容易被识破（每条都恰好 1.2 秒），抖动比均值更重要；
+    上限压在 2.8s —— 再久用户会觉得卡，不如先发一条短的。
+    """
+    base = max(chars, 1) / 6.0
+    jitter = random.uniform(0.65, 1.35)
+    delay = base * jitter * (0.75 if index == 0 else 1.0)
+    return min(max(delay, 0.45), 2.8)
+
+
+_PERIOD_STRIP_MAX_CHARS = 40
+_PERIOD_LIST_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s|[-*>]\s|\d+[.、)]\s)")
+
+
+def _strip_casual_period(text: str) -> str:
+    """闲聊短句结尾的句号去掉——IM 里没人每句都打句号。
+
+    只处理「短、中文、以句号结尾、不是列表/代码/表格」的单段：
+    问号、感叹号、省略号照旧；长句也不动（那些要靠句号断句）。
+    开关 ``ai_config.strip_trailing_period``（默认开），关掉即完全保留模型原样。
+    """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not bool(ai_config.get_config("strip_trailing_period").data):
+        return text
+    body = text.rstrip()
+    if not body.endswith("。"):
+        return text
+    if len(body) > _PERIOD_STRIP_MAX_CHARS:
+        return text
+    if "```" in body or "|" in body or _PERIOD_LIST_HEAD_RE.match(body):
+        return text
+    if not re.search(r"[\u4e00-\u9fff]", body):
+        return text
+    return body[:-1].rstrip()
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -1224,9 +1299,15 @@ async def send_chat_result(
     clean_text: str = _strip_persona_markdown(md_source)
 
     # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把 \n\n 也压成空格
-    # 导致下方 re.split(r"\n\s*\n") 切不出多条 "连发多条短句"退化成一整段。
+    # 导致下方拆条切不出多条 "连发多条短句"退化成一整段。
     clean_text = re.sub(r"[ \t]{2,}", " ", clean_text)
-    clean_text = re.sub(r"^[，。！？\s]+|[，。！？\s]+$", "", clean_text)
+    # 只清**行首**残留标点与行尾空白：不再剥句末标点。
+    # 旧式 `[，。！？\s]+$` 会把每条回复最后的「。」「？」「！」吃掉，群里看到的
+    # 全是没标点的句子——这是最明显的机器人痕迹之一（见 docs/HUMANNESS.md §2.6）。
+    clean_text = re.sub(r"^[，。！？、\s]+", "", clean_text).rstrip()
+    # 只剩标点/空白才判空；表情符号（🫠 等）本身是有效回复，不能被当成空串丢掉。
+    if clean_text and not re.sub(r"[\s，。！？、,.!?…—~～:：;；\"'“”‘’（）()\[\]【】]", "", clean_text):
+        clean_text = ""
 
     # 出戏防火墙末端兜底（§D.4）：无重说通道的调用方（proactive / 兜底总结等）命中即替换；
     # gs_agent 主循环自带"提醒→重说→放行"闭环，重说产物以 ooc_check=False 经过此处。
@@ -1287,11 +1368,16 @@ async def send_chat_result(
             await _send_trailing_artifacts()
             return
 
-    # 按换行分割为多条消息
-    blocks = re.split(r"\n\s*\n", clean_text)
+    # 拆条：空行优先；无空行的短句分行也切成连发（见 _split_chat_bubbles）
+    blocks = _split_chat_bubbles(clean_text)
 
-    for block in blocks:
+    for _i, block in enumerate(blocks):
         if not block.strip():
+            continue
+
+        # 闲聊短句去掉结尾句号（问号/感叹号/长句不动；见 _strip_casual_period）
+        block = _strip_casual_period(block)
+        if not block:
             continue
 
         segments = _parse_at_segments(block)
@@ -1299,9 +1385,8 @@ async def send_chat_result(
         # 计算纯文本长度
         plain_text = re.sub(r"@\d+", "", block)
 
-        # 模拟打字延迟
-        delay = min(max(len(plain_text) / 7, 0.5), 3.0)
-        await asyncio.sleep(delay)
+        # 模拟打字延迟（带抖动；见 _typing_delay）
+        await asyncio.sleep(_typing_delay(len(plain_text), _i))
 
         await bot.send(segments, extra_metadata=extra_metadata)
 

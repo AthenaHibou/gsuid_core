@@ -287,6 +287,59 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
     return None
 
 
+# ── 客服腔（assistant/service tone）────────────────────────────────
+# 单独的「语气」判据：不涉及身份/资金红线，只是把"像客服/像助手"的句式挡回去重说。
+# 刻意只收**强特征**固定句式（"很高兴为您""有什么可以帮您"），不收"建议/谢谢/请问"
+# 这类日常词——白面鸮本来就用"您"，误杀会把她的话改成冷冰冰。
+_SERVICE_TONE_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"很高兴(为您|能帮|能够帮)", "很高兴为您"),
+    (r"(竭诚|乐意为您|为您)服务", "为您服务"),
+    (r"有什么(可以|能|需要)(帮|为)(您|你)", "有什么可以帮您"),
+    (r"(请问)?(还)?有什么(其他|别的)?(可以|需要)(帮|为|做)", "还有什么可以帮"),
+    (r"希望(以上|这|我的)?(回答|内容|信息)?(能)?对(您|你)[^。！？\n]{0,6}帮助", "希望对您有帮助"),
+    (r"如有(其他|任何)?(需要|疑问|问题)[^。！？\n]{0,10}(随时|欢迎|请(随时)?(联系|告诉))", "如有需要随时"),
+    (r"感谢(您|你)的(咨询|提问|反馈|耐心等待)", "感谢您的咨询"),
+    (r"请问还有(什么|其他)", "请问还有什么"),
+    (r"已为您(查询|找到|整理|准备|处理|设置)", "已为您"),
+    (r"作为(一个)?(AI|人工智能|助手)", "作为AI助手"),
+    # 社交套话：单看都"礼貌"，但放在角色嘴里就是客服。命中只触发一次重说，不替换。
+    (r"(^|[。！？!?\n]\s*)不客气[。！～~，,\s]", "不客气"),
+    (r"有(什么)?需要(的话)?(再|随时)(找我|叫我|联系我|说一声)", "有需要再找我"),
+    (r"随时(可以)?(找我|叫我|联系我)", "随时找我"),
+)
+
+
+def check_service_tone(text: str) -> Optional[FirewallHit]:
+    """客服腔检测：命中返回 FirewallHit(category="service_tone")，否则 None。
+
+    只做"要不要打回重说"的判定，不做替换——替换成固定文案比客服腔更像机器人。
+    由 ``output_gate`` 在主通道按 REWRITE 处理（一轮最多重说一次）。
+    """
+    if not text:
+        return None
+    for pattern, label in _SERVICE_TONE_PATTERNS:
+        if re.search(pattern, text):
+            return FirewallHit(category="service_tone", matched=[label])
+    return None
+
+
+def service_tone_enabled() -> bool:
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    try:
+        return bool(ai_config.get_config("service_tone_guard_enable").data)
+    except Exception:
+        return True
+
+
+def build_service_tone_warning(hit: FirewallHit) -> str:
+    return (
+        f"⛔ 你刚才那句话是客服/助手腔（命中：{'、'.join(hit.matched[:3])}）。"
+        "用角色自己的说法重说一遍：短、具体、可以带情绪；不要'为您/很高兴/有什么可以帮您/"
+        "希望对您有帮助/已为您'这类固定句式，也不要说'作为AI'。只输出重写后的那句话。"
+    )
+
+
 def is_enabled() -> bool:
     from gsuid_core.ai_core.configs.ai_config import ai_config
 

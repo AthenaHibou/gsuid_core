@@ -374,6 +374,8 @@
   "log.ai.output_gate_ooc_rewrite_never_release": "[output_gate/ooc] REWRITE never_release category={category}",
   "log.ai.output_gate_run_fused": "[output_gate] RUN FUSED after {attempts} bounces — silence, scrub history session={session_id}",
   "log.ai.output_gate_run_fused_post_end": "[output_gate] RUN FUSED (post-end rewrite exhausted) session={session_id} attempts={attempts} — silence + scrub",
+  "log.ai.output_gate_service_tone_rewrite": "[output_gate/service_tone] REWRITE 接客口調 matched={matched} preview={preview}",
+  "log.ai.output_gate_service_tone_allow": "[output_gate/service_tone] ALLOW 一度書き直し済み attempts={attempts} preview={preview}",
   "log.ai.output_gate_scrubbed_history": "[output_gate] scrubbed history: nudges={nudges} blocked_msgs={blocked_msgs}",
   "log.ai.output_gate_unknown_channel": "[output_gate] unknown channel={channel}, use main",
   "log.ai.planning_long_task_context_fail": "[Planning] 長期タスクコンテキストの注入に失敗しました: {e}",

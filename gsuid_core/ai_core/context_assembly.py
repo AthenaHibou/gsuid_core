@@ -189,13 +189,14 @@ async def assemble_dynamic_context(
     except Exception as e:
         logger.debug(t("log.ai.planning_long_task_context_fail", e=e))
 
-    # 仅风格提示：intent 不可靠，上轮用过工具或有任务时不压短
+    # 仅风格提示：intent 不可靠，上轮用过工具或有任务时不压短。
+    # 文案刻意不用"任务/必须"，否则闲聊轮也带着办事口吻（见 docs/HUMANNESS.md §2.5）。
     if intent == "闲聊" and not prev_turn_used_tools and not has_actionable:
-        context_parts.append("（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）")
+        context_parts.append("（这轮像随口聊：短句、说人话，不用列点也不用总结。）")
 
-    # 事务优先级：分类器判定为工具/问答意图时，明确动作优先于人格惰性
-    if intent in ("工具", "问答"):
-        context_parts.append("（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）")
+    # 注：原「本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。」已移除。
+    # 它是任务型 Agent 的纪律句，每轮注入会把聊天推向"办事员"口吻；工具决策本身
+    # 已由 system 段与工具 description 覆盖，不靠 user 侧加压。
 
     if recent_report_titles:
         titles_str = "、".join(recent_report_titles[-3:])

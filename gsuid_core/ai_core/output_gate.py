@@ -73,6 +73,7 @@ class PolicyState:
 class GateBag:
     angle_bracket: PolicyState = field(default_factory=PolicyState)
     ooc: PolicyState = field(default_factory=PolicyState)
+    service_tone: PolicyState = field(default_factory=PolicyState)
     ooc_warned_turn_ids: set[str] = field(default_factory=set)
 
 
@@ -94,6 +95,7 @@ def begin_response_batch(extra: Dict[str, Any]) -> None:
     bag = ensure_gate_bag(extra)
     bag.angle_bracket.batch_counted = False
     bag.ooc.batch_counted = False
+    bag.service_tone.batch_counted = False
 
 
 def _policy(bag: GateBag, name: str) -> PolicyState:
@@ -101,6 +103,8 @@ def _policy(bag: GateBag, name: str) -> PolicyState:
         return bag.angle_bracket
     if name == "ooc":
         return bag.ooc
+    if name == "service_tone":
+        return bag.service_tone
     # 未知名勿返回 throwaway：否则 attempts/blocked 静默丢状态
     raise ValueError(f"unknown output_gate policy: {name!r}")
 
@@ -237,6 +241,59 @@ def _eval_angle_bracket(
         policy="angle_bracket",
         feedback=ab.build_rewrite_warning(tags, text),
         detail=",".join(tags[:6]),
+    )
+
+
+# ── 策略：service_tone ─────────────────────────────────────────────
+
+
+def _eval_service_tone(
+    text: str,
+    extra: Dict[str, Any],
+    *,
+    channel: str,
+    count_attempt: bool,
+) -> Optional[GateResult]:
+    """客服腔：命中即打回让模型用角色口吻重说，**一轮只重说一次**，之后放行。
+
+    不做固定文案替换——"唔…这个不太想说呢…"这种兜底句比客服腔更像机器人。
+    只作用于主通道；工具通道（send_message_by_ai）由调用方自行决定。
+    """
+    from gsuid_core.ai_core import output_firewall as of
+
+    if channel != "main" or not of.service_tone_enabled():
+        return None
+
+    hit = of.check_service_tone(text)
+    if hit is None:
+        return None
+
+    bag = ensure_gate_bag(extra)
+    attempts = _record_block(extra, "service_tone", text, count_attempt=count_attempt)
+    # 已经重说过一次仍复犯：放行（继续打回只会让模型进入改写循环，反而更僵）
+    if attempts > 1:
+        logger.info(
+            i18n_t(
+                "log.ai.output_gate_service_tone_allow",
+                attempts=attempts,
+                preview=repr(text[:60]),
+            )
+        )
+        return GateResult(decision=GateDecision.ALLOW, policy="service_tone", detail="second_pass")
+
+    logger.warning(
+        i18n_t(
+            "log.ai.output_gate_service_tone_rewrite",
+            matched=repr(hit.matched[:3]),
+            preview=repr(text[:80]),
+        )
+    )
+    return GateResult(
+        decision=GateDecision.REWRITE,
+        policy="service_tone",
+        feedback=of.build_service_tone_warning(hit),
+        ooc_hit=hit,
+        detail=hit.category,
     )
 
 
@@ -478,6 +535,10 @@ def pre_send_gate(
     bag_extra: Dict[str, Any] = extra if extra is not None else {}
 
     r = _eval_angle_bracket(text, bag_extra, channel=channel, count_attempt=count_attempt)
+    if r is not None and r.decision is not GateDecision.ALLOW:
+        return r
+
+    r = _eval_service_tone(text, bag_extra, channel=channel, count_attempt=count_attempt)
     if r is not None and r.decision is not GateDecision.ALLOW:
         return r
 

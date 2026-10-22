@@ -136,9 +136,9 @@ def test_benign_money_talk_not_hit() -> None:
 def test_system_constraints_fund_redline() -> None:
     from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
 
-    assert "真实金钱往来" in SYSTEM_CONSTRAINTS
-    assert "绝不承诺转账" in SYSTEM_CONSTRAINTS
-    assert "不替他人向第三方" in SYSTEM_CONSTRAINTS
+    assert "禁真实金钱承诺" in SYSTEM_CONSTRAINTS
+    assert "不转账" in SYSTEM_CONSTRAINTS
+    assert "不代付" in SYSTEM_CONSTRAINTS
     # 压缩后仍须显式金钱红线（评测/生产共用）
 
 

@@ -255,6 +255,12 @@ AI_CONFIG: Dict[str, GSC] = {
         "开启后, 群消息中疑似'伪造工具返回'的文本会被降权标注, 防止粘贴伪造结果注入",
         True,
     ),
+    "service_tone_guard_enable": GsBoolConfig(
+        "客服腔打回",
+        "开启后, 回复里出现'很高兴为您/有什么可以帮您/希望对您有帮助/已为您'这类客服固定句式时, "
+        "打回让模型用角色口吻重说一次(同一轮最多一次, 不替换成固定文案)。",
+        True,
+    ),
     "favor_floor": GsIntConfig(
         "好感度下限",
         "好感度可达的最小值(clamp), 防止越界无限下跌",
@@ -336,6 +342,25 @@ AI_CONFIG: Dict[str, GSC] = {
         "交互式run超过该墙钟秒数后注入一次'停止新工具轮,收敛作答'提示(C-4), 治多步任务延迟长尾",
         45,
         options=[30, 45, 60, 90, 120],
+    ),
+    "pre_tool_expression_enable": GsBoolConfig(
+        "工具前摇",
+        "耗时工具（联网搜索/出图/派子代理）调用前，先发一句台词，避免几十秒静默像掉线。"
+        "台词优先取人格 config.json 的 pre_tool_expressions，没有则用框架默认的中性台词；"
+        "一次运行最多发 pre_tool_expression_max_per_run 条。",
+        True,
+    ),
+    "pre_tool_expression_max_per_run": GsIntConfig(
+        "每次运行最多前摇条数",
+        "一次 run 内最多发送几条工具前摇，防止多工具编排刷屏",
+        2,
+        options=[1, 2, 3, 5],
+    ),
+    "strip_trailing_period": GsBoolConfig(
+        "闲聊短句去句号",
+        "开启后, 40 字以内的中文短句若以「。」结尾, 发送前去掉句号（IM 里没人每句都打句号）。"
+        "问号/感叹号/省略号、长句、代码/表格/列表一律保留原样。",
+        True,
     ),
     "scaffold_followup_max_len": GsIntConfig(
         "省略式跟进最长字数",
