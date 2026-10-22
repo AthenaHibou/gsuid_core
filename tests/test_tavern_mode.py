@@ -199,6 +199,32 @@ def test_roleplay_output_keeps_narration_and_single_bubble(persona_root: Path) -
     assert "*" not in text
 
 
+def test_tavern_api_read_write_delete(persona_root: Path) -> None:
+    from gsuid_core.webconsole.persona_api import (
+        delete_persona_tavern,
+        get_persona_tavern,
+        update_persona_tavern,
+    )
+
+    (persona_root / "测试角色" / "tavern.json").unlink()
+    before = asyncio.run(get_persona_tavern("测试角色", {}))
+    assert before["status"] == 0
+    assert before["data"]["exists"] is False
+
+    written = asyncio.run(
+        update_persona_tavern("测试角色", {"config": {"main_prompt": "x", "scope": "private"}}, {})
+    )
+    assert written["status"] == 0
+    after = asyncio.run(get_persona_tavern("测试角色", {}))
+    assert after["data"]["exists"] is True
+    assert after["data"]["config"]["main_prompt"] == "x"
+
+    removed = asyncio.run(delete_persona_tavern("测试角色", {}))
+    assert removed["status"] == 0
+    final = asyncio.run(get_persona_tavern("测试角色", {}))
+    assert final["data"]["exists"] is False
+
+
 def test_examples_and_tool_call_coexist_in_pydantic_ai() -> None:
     seen: list[list[tuple[str, list[str]]]] = []
 

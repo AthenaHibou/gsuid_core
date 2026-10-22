@@ -335,6 +335,8 @@ M0 实际落地的拆分：
 
 `persona.md` 继续作为兼容/投影文件（AgentNode 的 `prompt` 仍读它）；M1 导入 V2/V3 卡时，把卡片字段规范化到 `tavern.json` 即可。
 
+> M0 UI：当前 WebConsole 的 React bundle 是预编译产物，人格配置页没有 `prompt_profile` 字段入口。core 在返回 `index.html` 时注入 `/app/tavern-ui.js`，页面**右下角**出现「酒馆设置」浮层：选人格、切 `gscore/tavern`、编辑/保存/删除 `tavern.json`。刷新页面即可看到。
+
 > 实现细节：`persona/config.py` 是 `GSC` 模板 + append-only 自动升级；`tavern.json` 是独立 sidecar，避免把长文本/示例塞进 config 模板，也方便 M1 直接由卡片生成。
 
 ### 5.3 切换与热重载

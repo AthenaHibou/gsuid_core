@@ -5,6 +5,7 @@ Persona APIs
 """
 
 import base64
+import json
 from typing import Any, Dict
 
 from fastapi import Depends, HTTPException
@@ -42,6 +43,9 @@ AUDIO_MIME_TYPES = {
     ".m4a": "audio/mp4",
     ".flac": "audio/flac",
 }
+
+# 酒馆 sidecar 上限：防止把超大文件写进 persona 目录（示例/世界书正常远小于此值）
+_MAX_TAVERN_CONFIG_BYTES = 200_000
 
 
 @app.get("/api/persona/list", summary="获取角色列表", tags=PERSONA)
@@ -97,6 +101,77 @@ async def get_persona_detail(persona_name: str, _: Dict[str, Any] = Depends(requ
             "msg": f"角色 '{persona_name}' 不存在",
             "data": None,
         }
+
+
+@app.get("/api/persona/{persona_name}/tavern", summary="获取酒馆模式配置", tags=PERSONA)
+async def get_persona_tavern(
+    persona_name: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """读取 `persona/<name>/tavern.json`（M0 sidecar）。
+
+    返回原始 JSON 而不是规范化后的 TavernConfig：前端编辑器需要保留未知字段，
+    M1 导入 V2/V3 卡时也不会因为 core 不认识的键而丢数据。
+    """
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {"status": 1, "msg": f"角色 '{persona_name}' 不存在", "data": None}
+
+    path = persona.dir_path / "tavern.json"
+    if not path.is_file():
+        return {"status": 0, "msg": "ok", "data": {"exists": False, "config": {}}}
+    if path.stat().st_size > _MAX_TAVERN_CONFIG_BYTES:
+        return {"status": 1, "msg": "tavern.json 过大，拒绝读取", "data": None}
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as e:
+        return {"status": 1, "msg": f"tavern.json 解析失败: {e}", "data": None}
+    if not isinstance(config, dict):
+        return {"status": 1, "msg": "tavern.json 必须是 JSON 对象", "data": None}
+    return {"status": 0, "msg": "ok", "data": {"exists": True, "config": config}}
+
+
+@app.put("/api/persona/{persona_name}/tavern", summary="保存酒馆模式配置", tags=PERSONA)
+async def update_persona_tavern(
+    persona_name: str,
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """保存 `persona/<name>/tavern.json`（只校验“是 JSON 对象 + 大小上限”）。"""
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {"status": 1, "msg": f"角色 '{persona_name}' 不存在", "data": None}
+
+    config = data.get("config")
+    if not isinstance(config, dict):
+        return {"status": 1, "msg": "config 必须是 JSON 对象", "data": None}
+    raw = json.dumps(config, ensure_ascii=False, indent=2)
+    if len(raw.encode("utf-8")) > _MAX_TAVERN_CONFIG_BYTES:
+        return {"status": 1, "msg": "tavern.json 过大，拒绝保存", "data": None}
+
+    path = persona.dir_path / "tavern.json"
+    try:
+        path.write_text(raw, encoding="utf-8")
+    except OSError as e:
+        return {"status": 1, "msg": f"写入失败: {e}", "data": None}
+    return {"status": 0, "msg": "ok", "data": {"exists": True, "config": config}}
+
+
+@app.delete("/api/persona/{persona_name}/tavern", summary="删除酒馆模式配置", tags=PERSONA)
+async def delete_persona_tavern(
+    persona_name: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {"status": 1, "msg": f"角色 '{persona_name}' 不存在", "data": None}
+    path = persona.dir_path / "tavern.json"
+    if path.is_file():
+        try:
+            path.unlink()
+        except OSError as e:
+            return {"status": 1, "msg": f"删除失败: {e}", "data": None}
+    return {"status": 0, "msg": "ok", "data": {"exists": False}}
 
 
 @app.put("/api/persona/{persona_name}/content", summary="更新角色内容", tags=PERSONA)

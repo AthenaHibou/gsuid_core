@@ -8,6 +8,18 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
 
+# 酒馆设置浮层脚本：dist 是预编译产物，不改 React bundle，由 index.html 注入一个
+# 独立 vanilla JS 面板；前端重新构建后仍然生效（注入发生在服务端返回 index 时）。
+_TAVERN_UI_SCRIPT = '<script src="/app/tavern-ui.js" defer></script>'
+
+
+def _serve_index(index_path: Path) -> HTMLResponse:
+    html = index_path.read_text(encoding="utf-8")
+    if "tavern-ui.js" not in html and (index_path.parent / "tavern-ui.js").is_file():
+        html = html.replace("</body>", f"{_TAVERN_UI_SCRIPT}</body>")
+    return HTMLResponse(html)
+
+
 # 常见文件扩展名到 MIME 类型的映射
 MIME_TYPES = {
     # JavaScript
@@ -280,7 +292,7 @@ async def setup_frontend_b():
                 index_path = dist_path / "index.html"
                 logger.info(t("log.webconsole.index_html_path", index_path=index_path))
                 if index_path.exists():
-                    return FileResponse(index_path, media_type="text/html")
+                    return _serve_index(index_path)
 
             # 尝试作为文件提供
             file_path = dist_path / path
@@ -301,7 +313,7 @@ async def setup_frontend_b():
             index_path = dist_path / "index.html"
             logger.info(t("log.webconsole.spa_fallback_index_html"))
             if index_path.exists():
-                return FileResponse(index_path, media_type="text/html")
+                return _serve_index(index_path)
 
             return HTMLResponse("Not Found", status_code=404)
 
