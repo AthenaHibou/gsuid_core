@@ -634,6 +634,13 @@ async def prepare_content_payload(
             body = annotate_untrusted_message(body)
         text += body
 
+    # 引用消息标注：core 侧无反向 get_msg 通道，被引用内容由转发器附带
+    # （如 GenshinUID 已把引用图片以 image 段并入）。至少告知模型引用存在，
+    # 避免其忽略"引用图片"这一上下文来源。
+    _reply_id = getattr(ev, "reply", None)
+    if _reply_id:
+        text += f"\n--- 用户引用了一条消息(id={_reply_id})，本条消息携带的图片可能来自该引用消息 ---\n"
+
     # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
     if ev.image_id_list:
         if lazy_image_read:
