@@ -7,6 +7,28 @@
 （如 ``STALE_CHAT_REQUEST_TTL``）在 ``gs_agent`` 内被 re-export，保持向后兼容。
 """
 
+# 框架默认的工具前摇台词（仅针对耗时工具），必须「人格中性」、任何 Persona 都能套用。
+# 带角色口吻的台词由各 Persona 在 config.json 的 "pre_tool_expressions" 覆盖（工具不在表里=不前摇）。
+# 背景：2026-08 重构拆分 agent_run 时这层被移除，实测长工具（联网搜索 40~60s）全程静默，
+# 群聊体感「像掉线」。人设 prompt 里虽要求「耗时工具前用自己的话告知」，但弱模型并不可靠，
+# 所以恢复成代码层兜底：先说一句，再干活。
+_FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
+    "web_search_tool": "稍等，我查一下相关信息…",
+    "search_knowledge": "让我先查一下资料…",
+    "web_fetch_tool": "我打开这个链接看看…",
+    "create_subagent": "这个任务我来安排处理…",
+    "render_html_to_image": "稍等，正在生成图片…",
+    "render_markdown_to_image": "稍等，正在生成图片…",
+    "render_card": "稍等，正在生成图片…",
+    "generate_image": "稍等，正在生成图片，可能需要一点时间…",
+    "generate_video": "稍等，正在生成视频，这个会比较久，请耐心等待…",
+    "edit_image": "稍等，正在处理图片…",
+    "generate_music": "稍等，正在生成音乐…",
+}
+
+# 每次运行最多发送的前摇数量，避免多工具编排时刷屏（ai_config 可覆盖）
+_MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
+
 # L3 会话驻留：一个能力族被使用后，继续在随后多少轮里保持常驻（兜底紧邻的追问）。
 _STICKY_FAMILY_TURNS = 2
 

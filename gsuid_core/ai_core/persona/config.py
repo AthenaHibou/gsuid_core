@@ -18,6 +18,7 @@ from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsIntConfig,
     GsStrConfig,
+    GsDictConfig,
     GsListStrConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetManager
@@ -70,6 +71,16 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "该人格额外常驻挂载的工具名（并入保底池，不经向量检索）。多个用换行分隔",
         [],
         options=[],
+    ),
+    # 工具前摇（耗时工具调用前先说一句）：键=工具名，值=台词**数组**（可放多条，随机取一条，
+    # 省略外层数组也能读）。工具不在表里 → 该工具不前摇；框架另有一份「人格中性」默认表兜底。
+    # 注意：GsDictConfig 的值类型是 List，写成裸字符串会被配置修复流程重置为空。
+    "pre_tool_expressions": GsDictConfig(
+        "工具前摇台词",
+        "耗时工具（联网搜索/出图/派子代理等）调用前，先发一句符合角色口吻的短句，"
+        "避免用户面对几十秒静默。键=工具名，值=台词数组（可多条随机取一条）；"
+        "一次运行最多发 2 条（见 AI 配置）。",
+        {},
     ),
 }
 

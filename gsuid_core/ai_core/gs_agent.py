@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 import base64
+import random
 import asyncio
 import contextvars
 from typing import Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
@@ -46,6 +47,8 @@ from gsuid_core.ai_core.const import (
     STALE_CHAT_REQUEST_TTL,
     ENABLE_PROGRESSIVE_TOOLS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
+    _FRAMEWORK_PRE_TOOL_EXPRESSIONS,
+    _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN,
 )
 from gsuid_core.ai_core.utils import (
     NO_RESULT_TEXT,
@@ -245,6 +248,54 @@ def _correction_is_deliverable(text: object) -> bool:
     return not _looks_like_process_meta(body)
 
 
+def _resolve_pre_tool_expression(persona_name: Optional[str], tool_name: str) -> Optional[str]:
+    """取某工具的「前摇」台词：人格配置优先，框架中性默认兜底；不在表里返回 None。
+
+    人格表在 ``persona/config.json`` 的 ``pre_tool_expressions``（webconsole 可编辑），
+    值可以是字符串，也可以是字符串列表（随机取一条）。空串 = 该工具明确不前摇。
+    """
+    table: dict = {}
+    if persona_name:
+        try:
+            from gsuid_core.ai_core.persona.config import persona_config_manager
+
+            raw = persona_config_manager.get_config(persona_name).get_config("pre_tool_expressions").data
+            if isinstance(raw, dict):
+                table = raw
+        except Exception as e:
+            logger.debug(i18n_t("log.agent.pre_tool_expression_persona_fail", e=e))
+            table = {}
+
+    for source in (table, _FRAMEWORK_PRE_TOOL_EXPRESSIONS):
+        if tool_name in source:
+            value = source[tool_name]
+            if isinstance(value, list):
+                value = random.choice(value) if value else ""
+            value = str(value).strip()
+            return value or None
+    return None
+
+
+def _max_pre_tool_expressions_per_run() -> int:
+    """一次 run 允许发几条前摇：ai_config 可调，越界回退常量。"""
+    try:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        v = int(ai_config.get_config("pre_tool_expression_max_per_run").data)
+        return max(0, min(5, v))
+    except Exception:
+        return _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN
+
+
+def _pre_tool_expression_enabled() -> bool:
+    try:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        return bool(ai_config.get_config("pre_tool_expression_enable").data)
+    except Exception:
+        return True
+
+
 def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Union[str, List["UserContent"]]:
     """向 user message（str 或 content 列表）尾部追加一段文本（拷贝后追加，不改原对象）。"""
     if isinstance(message, str):
@@ -283,9 +334,9 @@ _STRUCTURAL_ZERO_TOOL_NUDGE = (
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
 _RENDER_DATA_NUDGE = (
-    "（系统校验：本轮工具已返回多项/结构化数据，但尚未调用渲染出图工具。"
-    "请立即用 render_html_to_image（或 render_card / render_markdown_to_image）出图，"
-    "台词只留一两句角色引导，禁止把多条数据念成台词；渲染失败也只许短结论，禁止长列表凑数。）"
+    "（系统校验：本轮工具返回了较多结构化数据，你的台词已经把数据念出来了。"
+    "只有用户明确要清单/表格/多日对比时，才用 render_html_to_image 出一张图；"
+    "否则把数据压成一两句结论，用角色口吻说完就停，不要复述表格。）"
 )
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
@@ -639,6 +690,8 @@ class GsCoreAIAgent:
         self._recent_user_texts: List[str] = []
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时 故障重试重发，
         self._run_sent_texts: set[str] = set()
+        # 工具前摇计数（run() 每轮重置；这里给默认值，防纠正轮/直调路径先访问）
+        self._pre_tool_sent: int = 0
         # 最近一次 attempt 内已执行的工具名（与 _execute_run_once 的局部列表同引用）：
         self._last_attempt_tool_calls: List[str] = []
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
@@ -870,6 +923,37 @@ class GsCoreAIAgent:
         if isinstance(item, VideoUrl):
             return True
         return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("video/")
+
+    async def _maybe_send_pre_tool_expression(
+        self,
+        tool_name: str,
+        bot: Optional[Bot],
+        ev: Optional[Event],
+        return_mode: str,
+    ) -> None:
+        """耗时工具调用前先发一句前摇；**刻意不受** ``suppress_intermediate_text`` 影响。
+
+        那个开关压的是"模型自己絮叨的中间文本"，而前摇是刻意保留的等待体验：
+        联网搜索/出图动辄 40~60s，全程静默会被当成掉线。失败一律降级——前摇属于
+        体验增强，不能影响主流程。
+        """
+        if bot is None or ev is None or return_mode not in ("always", "by_bot"):
+            return
+        if not _pre_tool_expression_enabled():
+            return
+        if self._pre_tool_sent >= _max_pre_tool_expressions_per_run():
+            return
+        expr = _resolve_pre_tool_expression(self.persona_name, tool_name)
+        if not expr or expr in self._run_sent_texts:
+            return
+        self._pre_tool_sent += 1
+        self._run_sent_texts.add(expr)
+        try:
+            self._session_logger.log_text_output(expr)
+            await send_chat_result(bot, expr, ev=ev)
+            logger.debug(i18n_t("log.agent.pre_tool_expression_sent", p0=tool_name, p1=expr[:40]))
+        except Exception as e:
+            logger.debug(i18n_t("log.agent.pre_tool_expression_send_fail", e=e))
 
     async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
         """视频内容项 → (字节, mime)。"""
@@ -1184,6 +1268,8 @@ class GsCoreAIAgent:
         # 跨重试共享、按用户轮次重置：重试重跑 _execute_run_once 不会重发已送达的段；
         # 新一轮 run 则允许合法地再说同样的话。
         self._run_sent_texts = set()
+        # 工具前摇计数（每次 run 重置）：一次 run 最多发 N 条，防多工具编排刷屏。
+        self._pre_tool_sent = 0
 
         max_attempts: int = ai_config.get_config("agent_max_run_attempts").data
         retry_delay: float = ai_config.get_config("agent_run_retry_delay").data
@@ -2371,8 +2457,8 @@ class GsCoreAIAgent:
                                             _saw_structured_return = True
                                             part.content = (
                                                 _summarize_structured_data(part.content)
-                                                + "\n（结构数据已折叠。综合分析请 create_subagent；"
-                                                "多项数据用 render_html_to_image 出图，勿在台词复述原文。）"
+                                                + "\n（结构数据已折叠。用户要清单/表格时才 render 出图；"
+                                                "日常直接说结论，别复述原文。）"
                                             )
                                         else:
                                             # 搜索/拉取类：多行或够长 → 视为可出图材料（形状信号，非话题词）
@@ -2518,6 +2604,10 @@ class GsCoreAIAgent:
                                         record_tool_call(str(ev.user_id), part.tool_name, part.args)
                                 except Exception:
                                     pass
+
+                                # 耗时工具前摇：先发一句角色化台词，避免几十秒静默像掉线。
+                                # 放在 ToolCallPart 处理处（工具真正执行前），一次 run 最多 N 条。
+                                await self._maybe_send_pre_tool_expression(part.tool_name, bot, ev, return_mode)
 
                             # 大模型直接输出文本
                             elif isinstance(part, TextPart):
@@ -2892,14 +2982,16 @@ class GsCoreAIAgent:
                     else:
                         self._scrub_fake_done_history(set())
 
-                # 结构数据已返回却未出图：仅当池内有渲染工具且台词已偏长（疑似念表）
+                # 结构数据已返回却未出图：仅当池内有渲染工具、且台词已**明显过长**
+                # （>220 字，疑似整段念表）才纠偏一次。旧阈值 80 会把"几百字讲清一件事"
+                # 也推去出图——群聊里那等于把对话变成发图播报（见 docs/HUMANNESS.md §2.4）。
                 elif (
                     _saw_structured_return
                     and _tool_call_list
                     and not (_RENDER_TOOL_NAMES & set(_tool_call_list))
                     and bool(_RENDER_TOOL_NAMES & set(tool_names))
                     and result_msg
-                    and len(result_msg.strip()) > 80
+                    and len(result_msg.strip()) > 220
                     and not fake_done_retry
                     and self.create_by in _INTERACTIVE_CREATE_BY
                 ):
