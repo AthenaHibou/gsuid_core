@@ -22,5 +22,7 @@
   "log.persona.read_txt_path": "[Persona] 读取 {txt_path} 失败: {e}",
   "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor 迁移异常, 跳过: {e}",
   "log.persona.write_path": "[Persona] 写回 {path} 失败: {e}",
-  "log.persona.write_txt_path_keeping": "[Persona] 写出 {txt_path} 失败, 保留旧字段: {e}"
+  "log.persona.write_txt_path_keeping": "[Persona] 写出 {txt_path} 失败, 保留旧字段: {e}",
+  "log.persona.engines_config_too_large": "[Engines] '{persona_name}' 的 engines.json 过大，已忽略",
+  "log.persona.engines_config_parse_fail": "[Engines] 解析 '{persona_name}' 的 engines.json 失败: {e}"
 }

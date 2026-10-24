@@ -281,10 +281,9 @@ def build_tavern_prompt(cfg: TavernConfig, char_name: str, user_name: str, perso
 
 
 async def build_tavern_bundle(event: Event, persona_name: str) -> Optional[PromptBundle]:
-    """为私聊（或 scope=all）构建 tavern bundle；群聊默认返回 None 走 gscore。"""
+    """构建 tavern bundle。是否使用 tavern 由 ``engines.resolve_engine`` 决定；
+    本函数不再看 ``tavern.json.scope``（旧字段仅保留兼容，引擎分配以目标级覆盖为准）。"""
     cfg = load_tavern_config(persona_name)
-    if event.group_id and cfg.scope != "all":
-        return None
 
     persona = Persona(persona_name)
     persona_md = await persona.load_content() if persona.exists() else ""

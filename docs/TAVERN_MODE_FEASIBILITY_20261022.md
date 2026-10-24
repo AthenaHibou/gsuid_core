@@ -321,13 +321,12 @@ M0 实际落地的拆分：
   "mes_example": "<START>\n{{user}}: 在吗\n{{char}}: 在\n{{char}}: 说吧\n<START>\n{{user}}: 今天好累\n{{char}}: 那就别动了\n{{char}}: ……我也困\n",
   "post_history_instructions": "[戏外] 天气/新闻等事实问题先用 web_search_tool，再用角色口吻说结论；示例只校准语气，不代表可以跳过工具。",
   "author_note": {"text": "保持短句，不要客服腔。", "depth": 0},
-  "scope": "private",
   "output_style": "roleplay",
   "single_message": true
 }
 ```
 
-- `scope=private`（默认）：私聊走 tavern，群聊回退 gscore；`scope=all` 才在群聊也走 tavern（hybrid，仍保留群历史文本）。
+- `scope`：M0.5 起**废弃/忽略**，是否走 tavern 由 `engines.json` 的目标分配决定；保留字段只为旧文件兼容。
 - `mes_example`：`<START>` 分块、`{{user}}:` / `{{char}}:` 前缀、多行归并；连续同角色会合并，user 开头/assistant 结尾。
 - `post_history_instructions` + `author_note`：拼成 PHI，在历史之后、生成之前注入。
 - `description` / `personality` / `scenario`：可选；不填时用 `persona.md`。
@@ -335,15 +334,43 @@ M0 实际落地的拆分：
 
 `persona.md` 继续作为兼容/投影文件（AgentNode 的 `prompt` 仍读它）；M1 导入 V2/V3 卡时，把卡片字段规范化到 `tavern.json` 即可。
 
-> M0 UI：当前 WebConsole 的 React bundle 是预编译产物，人格配置页没有 `prompt_profile` 字段入口。core 在返回 `index.html` 时注入 `/app/tavern-ui.js`，页面**右下角**出现「酒馆设置」浮层：选人格、切 `gscore/tavern`、编辑/保存/删除 `tavern.json`。刷新页面即可看到。
+> M0 UI：当前 WebConsole 的 React bundle 是预编译产物，人格配置页没有引擎字段入口。core 在返回 `index.html` 时注入 `/app/tavern-ui.js`，页面**右下角**出现「对话引擎」浮层：全局开关、人格默认引擎、群/用户覆盖、`tavern.json` 编辑。刷新页面即可看到。
 
 > 实现细节：`persona/config.py` 是 `GSC` 模板 + append-only 自动升级；`tavern.json` 是独立 sidecar，避免把长文本/示例塞进 config 模板，也方便 M1 直接由卡片生成。
 
+### 5.2.1 引擎分配（core / tavern）
+
+`persona/<name>/engines.json`：
+
+```json
+{
+  "default": "tavern",
+  "overrides": {
+    "group:1049964220": "gscore",
+    "user:603563496": "tavern"
+  }
+}
+```
+
+解析优先级（`ai_core/persona/engines.py::resolve_engine`）：
+
+1. **目标级覆盖**：群聊 `group:<group_id>`，私聊 `user:<user_id>`；
+2. **人格默认**：`engines.json.default`，缺省回退 `config.json -> prompt_profile`；
+3. **全局默认**：`ai_config.engine_default`。
+
+总开关统一收口：
+
+- `ai_config.enable`（AI 服务总开关）关闭 → 两个引擎都不回复；
+- `ai_config.engine_tavern_enable`（酒馆引擎总开关）关闭 → 所有 tavern 分配回退 core，core 会话不受影响。
+
+群聊 session 是整群共享的，所以**群聊只认 group 覆盖，不认 user 覆盖**；user 覆盖只在私聊生效。切换引擎会重建 session（`engines.json`/`tavern.json` 的 mtime 已进入 `ai_router` 热重载）；全局开关变更由 API 主动清空存活 session。
+
 ### 5.3 切换与热重载
 
-- **per-persona 开关**：webconsole 人格配置页加“对话模式”单选；切换后写 config，`ai_router` 的 persona mtime 检测会重建 session（`ai_router.py:110-121`）。
-- **per-session 覆盖**（可选）：主人命令 `/酒馆` / `/群聊模式` 写一个 session override（`AIStateRecord` 或内存 map，带 TTL），下次消息生效；切换时建议**重建 session**，不要把两种形态的历史混在一起。
-- **热重载**：卡片/配置 mtime 进入 `_check_persona_changed` 的检测范围；`build_session_prompt_bundle` 返回新的 bundle。
+- **人格默认**：`engines.json.default`（或旧 `prompt_profile`）；webconsole 浮层与 API 均可改。
+- **目标级覆盖**：`overrides` 里的 `group:<id>` / `user:<id>`；群聊整群共享，只认 group 覆盖。
+- **全局开关**：`ai_config.enable` / `engine_tavern_enable` / `engine_default`；API 改全局开关会清空存活 session，下一次消息按新开关重建。
+- **热重载**：`engines.json` / `tavern.json` / `config.json` 的 mtime 进入 `_check_persona_changed`；切换后下一次消息重建 session。
 - **可观测性**：session log 的 metadata 增加 `prompt_profile` / `profile_version`，A/B 和排障时能区分。
 
 ### 5.4 内部结构
@@ -492,7 +519,7 @@ M0 已按本报告实现（`persona/tavern.py`、`PromptBundle`、`build_session
 | “你好” | `在。说吧，博士`（7 字，1 条，12.6s） | `嗯，我在 / 有事说事`（9 字，1 条，20.3s） |
 | “今天好累” | `那就别动了 / ……我也差不多，瘫着回你消息`（19 字，2 条） | `那就躺着 / 被子盖好 / 手机放下睡`（15 字，1 条） |
 | “帮我查明天上海天气” | 调 `web_search_tool` + 渲染，3 条/33 字/26.5s | 调 `web_search_tool`，2 条/44 字/63.4s |
-| 群聊（scope=private） | 正常 gscore | **回退 gscore**，未破坏群聊 |
+| 群聊（引擎=core） | 正常 gscore | **回退 gscore**，未破坏群聊 |
 
 关键发现：
 
@@ -500,10 +527,10 @@ M0 已按本报告实现（`persona/tavern.py`、`PromptBundle`、`build_session
 2. **工具名要显式写出来**。只说“可以调用工具”不够，模型会认为自己“没有实时天气工具”；写出 `web_search_tool` / `web_fetch_tool` / `query_user_memory` / `find_tools` 后命中率明显提高。
 3. **输出档位有效**：tavern 的 `（旁白）`/多段被保留，gscore 仍走 IM 清洗/拆条；单条消息模式避免把叙事拆成多条气泡。
 4. **成本**：tavern 私聊 hello 输入 8.7k tokens（gscore 13.2k），但天气轮因为工具结果/多轮请求达到 20k（gscore 同题 76k，含渲染轮）；整体没有明显 Token 劣势，延迟受模型/工具影响更大。
-5. **群聊回退正确**：`scope=private` 时群聊仍由 `build_session_prompt_bundle` 返回 gscore，不改变多用户语义。
-6. **`scope=all` 群聊可用（hybrid）**：实测群聊 `你好` 返回 12~13 字，天气问题仍调用 `web_search_tool` + 渲染，3 条气泡。群聊路径只保留多用户历史文本（其他用户发言是 gscore 的群聊特性），不再注入记忆/关系/mood/任务块；system/示例/PHI/输入前缀/输出清洗换成 tavern。它不是纯 ST 的 1:1 语义。
+5. **群聊回退正确**：引擎解析为 core 时群聊由 `build_session_prompt_bundle` 返回 gscore，不改变多用户语义。
+6. **群聊引擎=tavern 可用（hybrid）**：实测群聊 `你好` 返回 12~13 字，天气问题仍调用 `web_search_tool` + 渲染，3 条气泡。群聊路径只保留多用户历史文本（其他用户发言是 gscore 的群聊特性），不再注入记忆/关系/mood/任务块；system/示例/PHI/输入前缀/输出清洗换成 tavern。它不是纯 ST 的 1:1 语义。
 
-已生成一份可用的白面鸮配置：`data/AI_Core/persona/白面鸮/tavern.json`（`scope=all`、`output_style=roleplay`、`single_message=false`，16 组示例 + 戏外工具协议 + 作者注），并把该人格切到 `prompt_profile=tavern`。
+已生成一份可用的白面鸮配置：`data/AI_Core/persona/白面鸮/tavern.json`（`output_style=roleplay`、`single_message=false`，16 组示例 + 戏外工具协议 + 作者注），`engines.json` 默认 `tavern`，该人格已切到 `prompt_profile=tavern` 作为 fallback。
 
 ---
 

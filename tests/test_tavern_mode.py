@@ -141,11 +141,6 @@ def test_tavern_bundle_private_builds_card_examples_phi(persona_root: Path) -> N
     assert "不要解释自己的思路" in bundle.post_history
 
 
-def test_tavern_group_falls_back_to_gscore(persona_root: Path) -> None:
-    bundle = asyncio.run(build_tavern_bundle(_event(user_type="group", group_id="456"), "测试角色"))
-    assert bundle is None
-
-
 def test_session_bundle_selects_tavern_profile(
     persona_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,6 +218,80 @@ def test_tavern_api_read_write_delete(persona_root: Path) -> None:
     assert removed["status"] == 0
     final = asyncio.run(get_persona_tavern("测试角色", {}))
     assert final["data"]["exists"] is False
+
+
+def test_engine_resolution_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.ai_core.persona.engines as engines
+
+    class _Cfg:
+        def __init__(self, data):
+            self.data = data
+
+    class _AI:
+        def __init__(self, *, enable=True, tavern=True, default="gscore"):
+            self.values = {
+                "enable": enable,
+                "engine_tavern_enable": tavern,
+                "engine_default": default,
+            }
+
+        def get_config(self, key):
+            return _Cfg(self.values.get(key))
+
+    class _PersonaCfg:
+        def __init__(self, profile):
+            self.profile = profile
+
+        def get_config(self, key):
+            assert key == "prompt_profile"
+            return _Cfg(self.profile)
+
+    monkeypatch.setattr(engines, "PERSONA_PATH", tmp_path)
+    (tmp_path / "测试角色").mkdir()
+    monkeypatch.setattr(engines, "ai_config", _AI())
+    monkeypatch.setattr(
+        engines.persona_config_manager,
+        "get_config",
+        lambda name: _PersonaCfg("gscore"),
+    )
+
+    engines.save_engine_config(
+        "测试角色",
+        engines.EngineConfig(
+            default="gscore",
+            overrides={"group:456": "tavern", "user:123": "gscore"},
+        ),
+    )
+    group_ev = _event(user_type="group", group_id="456")
+    private_ev = _event()
+    assert asyncio.run(engines.resolve_engine(group_ev, "测试角色")) == "tavern"
+    assert asyncio.run(engines.resolve_engine(private_ev, "测试角色")) == "gscore"
+
+    # 人格默认：engines.json default 为空时回退 prompt_profile
+    engines.save_engine_config("测试角色", engines.EngineConfig(default="", overrides={}))
+    monkeypatch.setattr(
+        engines.persona_config_manager,
+        "get_config",
+        lambda name: _PersonaCfg("tavern"),
+    )
+    assert asyncio.run(engines.resolve_engine(private_ev, "测试角色")) == "tavern"
+
+    # 全局默认：人格默认也为空时回退 engine_default
+    monkeypatch.setattr(engines, "ai_config", _AI(default="tavern"))
+    monkeypatch.setattr(
+        engines.persona_config_manager,
+        "get_config",
+        lambda name: _PersonaCfg(""),
+    )
+    assert asyncio.run(engines.resolve_engine(private_ev, "测试角色")) == "tavern"
+
+    # 酒馆总开关关闭：tavern 全部回退 core
+    monkeypatch.setattr(engines, "ai_config", _AI(tavern=False, default="tavern"))
+    assert asyncio.run(engines.resolve_engine(private_ev, "测试角色")) == "gscore"
+
+    # AI 总开关关闭：两个引擎都不走
+    monkeypatch.setattr(engines, "ai_config", _AI(enable=False, default="tavern"))
+    assert asyncio.run(engines.resolve_engine(private_ev, "测试角色")) == "gscore"
 
 
 def test_examples_and_tool_call_coexist_in_pydantic_ai() -> None:

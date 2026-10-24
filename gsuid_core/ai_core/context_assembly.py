@@ -103,17 +103,17 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
 
 
 async def build_session_prompt_bundle(event: Event, persona_name: str) -> "PromptBundle":
-    """建会话时的提示词/对话形态快照（gscore / tavern 双档位）。
+    """建会话时的提示词/对话形态快照（core / tavern 双引擎）。
 
-    gscore 档位保持现有行为不变；tavern 档位读取 ``persona/<name>/tavern.json``，
-    默认只在私聊生效（scope=private），群聊回退 gscore，避免破坏多用户群聊语义。
+    引擎解析统一走 :func:`persona.engines.resolve_engine`：目标级覆盖 > 人格默认 >
+    全局默认，并统一受 ``ai_config.enable`` / ``engine_tavern_enable`` 总开关约束。
     """
-    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.engines import resolve_engine
     from gsuid_core.ai_core.persona.models import PromptBundle
     from gsuid_core.ai_core.persona.tavern import build_tavern_bundle
 
-    profile = str(persona_config_manager.get_config(persona_name).get_config("prompt_profile").data)
-    if profile == "tavern":
+    engine = await resolve_engine(event, persona_name)
+    if engine == "tavern":
         bundle = await build_tavern_bundle(event, persona_name)
         if bundle is not None:
             return bundle

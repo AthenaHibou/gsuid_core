@@ -25,7 +25,13 @@ from gsuid_core.ai_core.persona import (
 from gsuid_core.ai_core.gs_agent import build_new_persona
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.persona.engines import (
+    EngineConfig,
+    engine_config_to_api,
+    save_engine_config,
+)
 from gsuid_core.ai_core.persona.models import (
     MAX_FILE_SIZE,
     SUPPORTED_AUDIO_FORMATS,
@@ -101,6 +107,118 @@ async def get_persona_detail(persona_name: str, _: Dict[str, Any] = Depends(requ
             "msg": f"角色 '{persona_name}' 不存在",
             "data": None,
         }
+
+
+@app.get("/api/persona/engines/global", summary="获取对话引擎全局开关", tags=PERSONA)
+async def get_global_engines(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "ai_enable": bool(ai_config.get_config("enable").data),
+            "tavern_enable": bool(ai_config.get_config("engine_tavern_enable").data),
+            "default_engine": str(ai_config.get_config("engine_default").data),
+        },
+    }
+
+
+@app.put("/api/persona/engines/global", summary="更新对话引擎全局开关", tags=PERSONA)
+async def update_global_engines(
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    changed = False
+    if "ai_enable" in data:
+        value = data["ai_enable"]
+        if not isinstance(value, bool):
+            return {"status": 1, "msg": "ai_enable 必须是布尔值", "data": None}
+        changed = bool(ai_config.set_config("enable", value)) or changed
+    if "tavern_enable" in data:
+        value = data["tavern_enable"]
+        if not isinstance(value, bool):
+            return {"status": 1, "msg": "tavern_enable 必须是布尔值", "data": None}
+        changed = bool(ai_config.set_config("engine_tavern_enable", value)) or changed
+    if "default_engine" in data:
+        value = str(data["default_engine"])
+        if value not in ("gscore", "tavern"):
+            return {"status": 1, "msg": "default_engine 必须是 gscore/tavern", "data": None}
+        changed = bool(ai_config.set_config("engine_default", value)) or changed
+
+    if changed:
+        # 引擎形态在 session 建会话时固化；全局开关变更后清掉存活 session，
+        # 下一次消息按新开关重建（历史记录仍在 message_history，不丢上下文）。
+        from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+        registry = get_ai_session_registry()
+        for session_id in list(registry.get_all_ai_sessions()):
+            registry.remove_ai_session(session_id)
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "ai_enable": bool(ai_config.get_config("enable").data),
+            "tavern_enable": bool(ai_config.get_config("engine_tavern_enable").data),
+            "default_engine": str(ai_config.get_config("engine_default").data),
+        },
+    }
+
+
+@app.get("/api/persona/{persona_name}/engines", summary="获取人格引擎分配", tags=PERSONA)
+async def get_persona_engines(
+    persona_name: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {"status": 1, "msg": f"角色 '{persona_name}' 不存在", "data": None}
+    return {"status": 0, "msg": "ok", "data": engine_config_to_api(persona_name)}
+
+
+@app.put("/api/persona/{persona_name}/engines", summary="更新人格引擎分配", tags=PERSONA)
+async def update_persona_engines(
+    persona_name: str,
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """保存人格默认引擎 + 目标级覆盖（group:/user:）。
+
+    群聊 session 整群共享，因此群聊只应用 group 覆盖；user 覆盖只在私聊生效。
+    """
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {"status": 1, "msg": f"角色 '{persona_name}' 不存在", "data": None}
+
+    default = str(data.get("default", "") or "")
+    if default and default not in ("gscore", "tavern"):
+        return {"status": 1, "msg": "default 必须是 gscore/tavern", "data": None}
+
+    raw_overrides = data.get("overrides", {})
+    if not isinstance(raw_overrides, dict):
+        return {"status": 1, "msg": "overrides 必须是对象", "data": None}
+    if len(raw_overrides) > 200:
+        return {"status": 1, "msg": "overrides 最多 200 条", "data": None}
+
+    overrides: Dict[str, str] = {}
+    for key, value in raw_overrides.items():
+        if not isinstance(key, str) or ":" not in key:
+            return {"status": 1, "msg": f"无效目标: {key!r}", "data": None}
+        target_type, target_id = key.split(":", 1)
+        if target_type not in ("group", "user") or not target_id.strip():
+            return {"status": 1, "msg": f"无效目标: {key!r}", "data": None}
+        if value not in ("gscore", "tavern"):
+            return {"status": 1, "msg": f"{key} 的引擎必须是 gscore/tavern", "data": None}
+        overrides[f"{target_type}:{target_id.strip()}"] = str(value)
+
+    try:
+        save_engine_config(persona_name, EngineConfig(default=default, overrides=overrides))
+    except (OSError, ValueError) as e:
+        return {"status": 1, "msg": f"保存失败: {e}", "data": None}
+
+    # 旧字段同步：没有 engines.json 的代码路径仍以 prompt_profile 为 fallback。
+    if default:
+        persona_config_manager.set_prompt_profile(persona_name, default)
+    return {"status": 0, "msg": "ok", "data": engine_config_to_api(persona_name)}
 
 
 @app.get("/api/persona/{persona_name}/tavern", summary="获取酒馆模式配置", tags=PERSONA)

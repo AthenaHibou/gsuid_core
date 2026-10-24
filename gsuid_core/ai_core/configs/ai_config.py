@@ -19,6 +19,19 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用AI服务",
         False,
     ),
+    "engine_tavern_enable": GsBoolConfig(
+        "酒馆引擎总开关",
+        "关闭后所有 tavern 引擎分配都回退 core，AI 总开关仍独立；"
+        "用于只保留群聊 Agent、但暂时不想让任何会话走酒馆。",
+        True,
+    ),
+    "engine_default": GsStrConfig(
+        "默认对话引擎",
+        "人格没有显式指定引擎、也没有目标级覆盖时使用的引擎。"
+        "gscore=群聊 Agent；tavern=酒馆角色。单个群/用户可在人格引擎分配里覆盖。",
+        "gscore",
+        options=["gscore", "tavern"],
+    ),
     "AgentBase": GsDivider(
         "额外配置",
         "额外配置",
