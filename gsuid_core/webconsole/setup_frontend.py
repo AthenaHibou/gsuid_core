@@ -10,14 +10,16 @@ from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
 
 # 酒馆设置浮层脚本：dist 是预编译产物，不改 React bundle，由 index.html 注入一个
 # 独立 vanilla JS 面板；前端重新构建后仍然生效（注入发生在服务端返回 index 时）。
-_TAVERN_UI_SCRIPT = '<script src="/app/tavern-ui.js" defer></script>'
-
-
 def _serve_index(index_path: Path) -> HTMLResponse:
     html = index_path.read_text(encoding="utf-8")
-    if "tavern-ui.js" not in html and (index_path.parent / "tavern-ui.js").is_file():
-        html = html.replace("</body>", f"{_TAVERN_UI_SCRIPT}</body>")
-    return HTMLResponse(html)
+    ui_path = index_path.parent / "tavern-ui.js"
+    if "tavern-ui.js" not in html and ui_path.is_file():
+        # 带 mtime 版本号：浏览器对 /app/tavern-ui.js 的强缓存很顽固，普通刷新
+        # 会继续用旧面板；版本号变化即可强制重新拉取。
+        version = int(ui_path.stat().st_mtime)
+        script = f'<script src="/app/tavern-ui.js?v={version}" defer></script>'
+        html = html.replace("</body>", f"{script}</body>")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 # 常见文件扩展名到 MIME 类型的映射
@@ -307,7 +309,12 @@ async def setup_frontend_b():
                         mime_type=mime_type,
                     )
                 )
-                return FileResponse(file_path, media_type=mime_type)
+                headers = (
+                    {"Cache-Control": "no-cache, no-store, must-revalidate"}
+                    if file_path.name == "tavern-ui.js"
+                    else None
+                )
+                return FileResponse(file_path, media_type=mime_type, headers=headers)
 
             # 对于 SPA，返回 index.html 让前端路由处理
             index_path = dist_path / "index.html"
