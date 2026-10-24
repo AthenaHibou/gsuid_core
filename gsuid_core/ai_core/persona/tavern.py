@@ -72,7 +72,8 @@ TAVERN_CAPABILITY_REMINDER = (
 )
 
 _MAX_FIELD_CHARS = 20000
-_MAX_EXAMPLE_MESSAGES = 16
+# 16 组 <START> 通常约 30 条消息；旧值 16 会把后半段示例静默截掉。
+_MAX_EXAMPLE_MESSAGES = 40
 _MAX_EXAMPLE_CHARS = 8000
 
 _USER_PREFIX = re.compile(r"^\s*(?:\{\{user\}\}|用户|User|You)\s*[:：]\s*(.*)$", re.IGNORECASE)
