@@ -72,6 +72,7 @@ def _write_persona(tmp_path: Path, name: str = "测试角色", *, scope: str = "
                 ),
                 "post_history_instructions": "保持短句，不要客服腔。",
                 "author_note": {"text": "不要解释自己的思路。", "depth": 0},
+                "worldview": "泰拉大陆：源石、矿石病、移动城市。",
                 "scope": scope,
             },
             ensure_ascii=False,
@@ -132,6 +133,8 @@ def test_tavern_bundle_private_builds_card_examples_phi(persona_root: Path) -> N
     assert bundle.single_message is True
     assert "## 角色设定" in bundle.system_prompt
     assert "性格冷淡" in bundle.system_prompt
+    assert "## 世界观" in bundle.system_prompt
+    assert "泰拉大陆" in bundle.system_prompt
     assert "戏外能力" in bundle.system_prompt
     assert "web_search_tool" in bundle.system_prompt
     assert "必须先调用工具" in bundle.system_prompt

@@ -2287,6 +2287,12 @@ class GsCoreAIAgent:
 
         # 最终去重（兼容外部直接传入 tools 的情况）
         tools = list({obj.name: obj for obj in tools}.values())
+        # 酒馆模式隐藏 search_knowledge：它的工具描述强制“专业问题先查知识库”，
+        # 会把“源石是什么”这类设定常识变成一次 RAG 检索 + “检索/数据库”播报。
+        # 酒馆的世界观由 tavern.json 的 worldview 提供；需要外部资料时保留 web_search_tool。
+        if self.prompt_bundle is not None and self.prompt_bundle.profile == "tavern":
+            context.blocked_tool_names.add("search_knowledge")
+            tools = [t for t in tools if t.name != "search_knowledge"]
         tool_names = [t.name for t in tools]
 
         # 回填本轮装配工具的能力域，供 handle_ai 偏好注入精确过滤（"装配后回传"）： 把工具名映射回 capability_domain

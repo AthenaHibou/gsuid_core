@@ -321,6 +321,7 @@ M0 实际落地的拆分：
   "mes_example": "<START>\n{{user}}: 在吗\n{{char}}: 在\n{{char}}: 说吧\n<START>\n{{user}}: 今天好累\n{{char}}: 那就别动了\n{{char}}: ……我也困\n",
   "post_history_instructions": "[戏外] 天气/新闻等事实问题先用 web_search_tool，再用角色口吻说结论；示例只校准语气，不代表可以跳过工具。",
   "author_note": {"text": "保持短句，不要客服腔。", "depth": 0},
+  "worldview": "泰拉大陆：源石、矿石病、移动城市……（只在相关时自然带出）",
   "output_style": "roleplay",
   "single_message": true
 }
@@ -329,7 +330,7 @@ M0 实际落地的拆分：
 - `scope`：M0.5 起**废弃/忽略**，是否走 tavern 由 `engines.json` 的目标分配决定；保留字段只为旧文件兼容。
 - `mes_example`：`<START>` 分块、`{{user}}:` / `{{char}}:` 前缀、多行归并；连续同角色会合并，user 开头/assistant 结尾。
 - `post_history_instructions` + `author_note`：拼成 PHI，在历史之后、生成之前注入。
-- `description` / `personality` / `scenario`：可选；不填时用 `persona.md`。
+- `description` / `personality` / `scenario` / `worldview`：可选；`description` 不填时用 `persona.md`，`worldview` 是静态世界设定（M0 不做关键词 Lorebook）。
 - `output_style=roleplay`：保留旁白/段落；`single_message=true`：整段一条，不拆 IM 气泡。
 
 `persona.md` 继续作为兼容/投影文件（AgentNode 的 `prompt` 仍读它）；M1 导入 V2/V3 卡时，把卡片字段规范化到 `tavern.json` 即可。
@@ -530,7 +531,9 @@ M0 已按本报告实现（`persona/tavern.py`、`PromptBundle`、`build_session
 5. **群聊回退正确**：引擎解析为 core 时群聊由 `build_session_prompt_bundle` 返回 gscore，不改变多用户语义。
 6. **群聊引擎=tavern 可用（hybrid）**：实测群聊 `你好` 返回 12~13 字，天气问题仍调用 `web_search_tool` + 渲染，3 条气泡。群聊路径只保留多用户历史文本（其他用户发言是 gscore 的群聊特性），不再注入记忆/关系/mood/任务块；system/示例/PHI/输入前缀/输出清洗换成 tavern。它不是纯 ST 的 1:1 语义。
 
-已生成一份可用的白面鸮配置：`data/AI_Core/persona/白面鸮/tavern.json`（`output_style=roleplay`、`single_message=false`，16 组示例 + 戏外工具协议 + 作者注），`engines.json` 默认 `tavern`，该人格已切到 `prompt_profile=tavern` 作为 fallback。
+已生成一份可用的白面鸮配置：`data/AI_Core/persona/白面鸮/tavern.json`（`output_style=roleplay`、`single_message=false`，17 组示例 + 泰拉世界观 + 戏外工具协议 + 作者注），`engines.json` 默认 `tavern`，该人格已切到 `prompt_profile=tavern` 作为 fallback。tavern 模式隐藏 `search_knowledge`（其工具描述会强制“专业问题先查知识库”，把设定常识变成 RAG 播报），保留 `web_search_tool` 等外部数据工具；世界观写在 `worldview` 静态块里，不走关键词 Lorebook。
+
+世界观参考：[Terra](https://arknights.wiki.gg/wiki/Terra)、[Originium](https://arknights.wiki.gg/wiki/Originium)、[Ptilopsis/Story](https://arknights.wiki.gg/wiki/Ptilopsis/Story)。
 
 ---
 

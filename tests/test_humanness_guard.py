@@ -117,6 +117,9 @@ def test_pre_tool_send_is_not_gated_by_suppress_intermediate_text() -> None:
         "感谢您的咨询。",
         "不客气。有需要再叫我。",
         "随时找我。",
+        "信息已明确接收。",
+        "还有什么要查阅的吗",
+        "数据记录完毕。",
     ],
 )
 def test_service_tone_hits(text: str) -> None:
