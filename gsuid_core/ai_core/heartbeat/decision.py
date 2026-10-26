@@ -245,8 +245,8 @@ async def run_heartbeat(
     persona_text = f"{ROLE_PLAYING_START}\n{persona_content}"
     decision_persona_text = f"{ROLE_PLAYING_START}\n{decision_persona}"
 
-    # 两个阶段共用同一份上下文，只格式化一次
-    history_context = format_history_for_agent(history=history)
+    # 两个阶段共用同一份上下文，只格式化一次（自己此前的发言标「人格名(我)」）
+    history_context = format_history_for_agent(history=history, bot_self_name=persona_name)
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 获取群组摘要缓存（如果启用）
@@ -480,7 +480,7 @@ async def run_reactive_gate(
         compact = extract_compact_persona(persona_content) or persona_content
         persona_text = f"{ROLE_PLAYING_START}\n{compact}"
 
-        history_context = format_history_for_agent(history=history)
+        history_context = format_history_for_agent(history=history, bot_self_name=persona_name)
         nickname: Optional[str] = None
         if isinstance(event.sender, dict) and "nickname" in event.sender:
             raw_nick = event.sender["nickname"]

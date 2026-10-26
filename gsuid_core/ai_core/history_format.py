@@ -164,6 +164,7 @@ def format_history_for_agent(
     current_user_name: Optional[str] = None,
     *,
     include_current_turn: bool = False,
+    bot_self_name: Optional[str] = None,
 ) -> str:
     """
     将历史记录格式化为 Agent 可用的紧凑上下文。
@@ -175,7 +176,7 @@ def format_history_for_agent(
 
         [历史对话] 旧→新
         [14:32:05] 小明(用户ID:456): 今天天气怎么样？
-        [14:32:18] AI: 唔…晴天
+        [14:32:18] 白面鸮(我): 唔…晴天
         [昨天 22:10:03] 用户ID:789: 大家好
 
     特殊处理：
@@ -184,6 +185,10 @@ def format_history_for_agent(
         - 同人合并窗口内连发合并为一个发言块，正文用「 / 」拼接
         - at/图/音/文件压成行尾 ``| …``，不另起 ``---`` 大块
         - ``include_current_turn=True`` 时才把 current_user 最后一条标 ``[当前]`` 前置（heartbeat 等）
+        - ``bot_self_name`` 传入人格名时，assistant 记录标为 ``人格名(我)``——历史按
+          bot_self_id 分 session，里面的 assistant 记录都是本 bot 自己发出的（含插件
+          命令回复），匿名 ``AI`` 标签会让模型在多机器人群里把它误读成"别的机器人
+          说的"，进而答出"这不归我管，找那边的机器人"。不传时保持旧行为 ``AI``。
     """
     if not history:
         return ""
@@ -256,14 +261,17 @@ def format_history_for_agent(
 
     def _make_speaker(record: MessageRecord) -> str:
         if record.role == "assistant":
+            self_label = "AI"
+            if bot_self_name and bot_self_name.strip():
+                self_label = f"{bot_self_name.strip()}(我)"
             reply_to = None
             reply_name = None
             if record.metadata:
                 reply_to = record.metadata.get("reply_to_user_id")
                 reply_name = record.metadata.get("reply_to_user_name")
             if reply_to:
-                return f"AI→{_user_label(str(reply_to), reply_name)}"
-            return "AI"
+                return f"{self_label}→{_user_label(str(reply_to), reply_name)}"
+            return self_label
         return _user_label(record.user_id, record.user_name)
 
     output: List[str] = []

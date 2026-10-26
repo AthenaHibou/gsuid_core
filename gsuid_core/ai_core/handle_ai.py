@@ -491,6 +491,9 @@ async def handle_ai_chat(
                     current_user_id=str(event.user_id),
                     current_user_name=event.sender.get("nickname") if event.sender else None,
                     include_current_turn=False,
+                    # bot 自己（含插件命令）的回复标为「人格名(我)」，让模型认出这是
+                    # 本机功能发出的，而不是群里另一个机器人说的
+                    bot_self_name=session.persona_name,
                 )
 
                 if history_context:

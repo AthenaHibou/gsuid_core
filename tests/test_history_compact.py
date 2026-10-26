@@ -50,3 +50,32 @@ def test_include_current_turn_optional() -> None:
     assert "当前·主(用户ID:9)" in with_cur
     # 当前句不进历史块重复
     assert with_cur.count("当前句") == 1
+
+
+def test_bot_self_name_labels_own_replies() -> None:
+    t0 = time.time() - 90
+    history = [
+        _rec("1", "甲", "yk同步 崩铁 29", t0),
+        MessageRecord(role="assistant", user_id="bot", content="已成功同步月卡信息", timestamp=t0 + 2),
+        _rec("1", "甲", "这是谁同步的", t0 + 30),
+    ]
+    # 不传人格名：保持旧行为匿名 AI
+    legacy = format_history_for_agent(history)
+    assert "] AI: 已成功同步月卡信息" in legacy
+    # 传人格名：bot 自己的回复标为「人格名(我)」，模型可认出是本机功能发的
+    named = format_history_for_agent(history, bot_self_name="白面鸮")
+    assert "白面鸮(我): 已成功同步月卡信息" in named
+    assert "\nAI:" not in named
+    # reply 标注同样带自我标识
+    history_reply = [
+        _rec("1", "甲", "在吗", t0),
+        MessageRecord(
+            role="assistant",
+            user_id="bot",
+            content="在的",
+            timestamp=t0 + 2,
+            metadata={"reply_to_user_id": "1", "reply_to_user_name": "甲"},
+        ),
+    ]
+    named_reply = format_history_for_agent(history_reply, bot_self_name="白面鸮")
+    assert "白面鸮(我)→甲(用户ID:1)" in named_reply
