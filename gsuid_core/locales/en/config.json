@@ -14,6 +14,8 @@
   "log.config.invalid_time_range_format": "[Config][{p0}] Invalid time-range format '{value}' for configuration item {key}; aborting write...",
   "log.config.name_type_mismatch": "[Config][{config_name}] Type mismatch for configuration item {key} ({p0} -> {p1}); reset to default",
   "log.config.removed_bypass_field_conform": "[Config][{p0}] Removed bypass field '{k}' that does not conform to the GSC structure (type: {p1})",
+  "log.config.atomic_save_fallback_direct": "[Config][{p0}] Atomic replace failed ({e}); falling back to direct write",
+  "log.config.save_plugin_config_fail": "[Config][{p0}] Failed to save plugin config: {e}",
   "log.config.target_configuration_file_exists_skip": "[Config][{p0}] Target configuration file already exists; skipping migration from {old_path}",
   "log.config.write_fail": "Failed to write configuration file!"
 }

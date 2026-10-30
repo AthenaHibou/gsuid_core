@@ -339,6 +339,7 @@ class PluginConfigStore:
         target = PLUGINS_CONFIGS_PATH / f"{plugin_name}.json"
         max_retries = 3
         retry_delay = 0.5
+        payload = json.dumps(self._cache[plugin_name], indent=4, ensure_ascii=False)
         for attempt in range(max_retries):
             try:
                 with atomic_save(
@@ -348,21 +349,27 @@ class PluginConfigStore:
                     file_perms=0o644,
                 ) as file:
                     if file:
-                        json_str = json.dumps(
-                            self._cache[plugin_name],
-                            indent=4,
-                            ensure_ascii=False,
-                        )
-                        file.write(json_str.encode("utf-8"))
+                        file.write(payload.encode("utf-8"))
                     else:
                         raise RuntimeError(f"写入插件配置文件失败: {plugin_name}")
                 self._dirty.discard(plugin_name)
                 return
-            except OSError:
+            except (OSError, RuntimeError) as e:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
-                else:
-                    raise
+                    continue
+                # 原子替换多次失败通常是杀软/索引器短暂占用句柄: 退化直写,
+                # 且不再抛出, 避免写配置失败直接阻断整个启动流程
+                from gsuid_core.logger import logger
+                from gsuid_core.i18n import t
+
+                logger.warning(t("log.config.atomic_save_fallback_direct", p0=plugin_name, e=e))
+                try:
+                    target.write_text(payload, encoding="utf-8")
+                    self._dirty.discard(plugin_name)
+                except Exception as write_err:
+                    logger.error(t("log.config.save_plugin_config_fail", p0=plugin_name, e=write_err))
+                return
 
     def save_dirty(self) -> None:
         """持久化所有标记为脏的插件配置。"""
@@ -373,7 +380,13 @@ class PluginConfigStore:
     def save_all(self) -> None:
         """持久化所有插件配置。"""
         for name in list(self._cache):
-            self.save(name)
+            try:
+                self.save(name)
+            except Exception as e:
+                from gsuid_core.logger import logger
+                from gsuid_core.i18n import t
+
+                logger.error(t("log.config.save_plugin_config_fail", p0=name, e=e))
 
 
 plugin_config_store: PluginConfigStore = PluginConfigStore()
