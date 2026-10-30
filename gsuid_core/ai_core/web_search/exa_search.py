@@ -91,6 +91,7 @@ async def _do_exa_search(
 async def exa_search(
     query: str,
     max_results: Optional[int] = None,
+    fail_fast: bool = False,
 ) -> list[dict]:
     """
     使用 Exa API 进行 web 搜索
@@ -121,9 +122,10 @@ async def exa_search(
     search_type = exa_config.get_config("search_type").data or "neural"
 
     # 记录已尝试的 api_key，避免重复尝试
+    max_attempts = 1 if fail_fast else len(api_key_pool)
     tried_keys = set()
 
-    while len(tried_keys) < len(api_key_pool):
+    while len(tried_keys) < max_attempts:
         api_key = _select_api_key([k for k in api_key_pool if k not in tried_keys])
         if not api_key:
             break
@@ -141,8 +143,8 @@ async def exa_search(
             logger.info(t("log.ai.websearch_exa_search_query", query=query, p0=len(results)))
             return results
 
-        except Exception:
-            logger.warning(t("log.ai.websearch_exa_api_key_trying", p0=api_key[-4:]))
+        except Exception as e:
+            logger.warning(t("log.ai.websearch_exa_api_key_trying", p0=api_key[-4:], e=e))
             continue
 
     logger.error(t("log.ai.websearch_exa_api_keys"))

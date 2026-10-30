@@ -19,6 +19,8 @@ from gsuid_core.ai_core.configs.ai_config import (
     exa_config,
     memory_config,
     tavily_config,
+    baidu_search_config,
+    deepseek_search_config,
 )
 
 from ._api_tags import AI_WIZARD
@@ -157,6 +159,13 @@ def _check_websearch_config() -> Dict[str, Any]:
         "issues": [],
     }
 
+    # 主备链路已配置时，以链路为准（单一 provider 的 Key 缺失不再算问题）
+    primary_sources = ai_config.get_config("websearch_primary_sources").data
+    if primary_sources:
+        result["configured"] = True
+        result["note"] = f"已配置主备链路: {' -> '.join(str(s) for s in primary_sources)}"
+        return result
+
     if provider == "Tavily":
         api_keys = tavily_config.get_config("api_key").data
         if not api_keys or (isinstance(api_keys, list) and len(api_keys) == 0):
@@ -175,6 +184,19 @@ def _check_websearch_config() -> Dict[str, Any]:
         else:
             result["configured"] = True
             result["note"] = f"已配置 {len([k for k in api_keys if k])} 个 Exa API Key"
+    elif provider in ("DeepSeek", "百度"):
+        search_config = deepseek_search_config if provider == "DeepSeek" else baidu_search_config
+        api_keys = search_config.get_config("api_key").data
+        if not api_keys or (isinstance(api_keys, list) and len(api_keys) == 0):
+            result["issues"].append(f"{provider} API Key 未配置")
+        elif isinstance(api_keys, list) and all(not k for k in api_keys):
+            result["issues"].append(f"{provider} API Key 为空")
+        else:
+            result["configured"] = True
+            result["note"] = f"已配置 {len([k for k in api_keys if k])} 个 {provider} API Key"
+    elif provider == "DuckDuckGo":
+        result["configured"] = True
+        result["note"] = "DuckDuckGo 无需 API Key"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:

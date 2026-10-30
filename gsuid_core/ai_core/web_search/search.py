@@ -1,7 +1,8 @@
 """
 Web Search 公共 API 模块
 
-提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / MCP）。
+提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎
+（Tavily / Exa / DeepSeek / 百度千帆 / DuckDuckGo / MCP）。
 外部模块应通过本模块的函数调用搜索，无需关心底层搜索引擎的实现细节。
 """
 
@@ -14,16 +15,45 @@ from gsuid_core.ai_core.mcp.utils import (
     build_mcp_arguments,
     call_mcp_tool_checked,
 )
-from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.ai_config import (
+    ai_config,
+    exa_config,
+    tavily_config,
+    baidu_search_config,
+    deepseek_search_config,
+)
 
 from .exa_search import exa_search
+from .baidu_search import baidu_search
 from .tavily_search import (
     tavily_search,
     tavily_search_with_context,
 )
+from .deepseek_search import deepseek_search
+from .duckduckgo_search import duckduckgo_search
 
 # 单条 MCP 原始返回兜底透传时的最大字符数，避免一次搜索把上下文吃满
 _MAX_MCP_RAW_CHARS = 4000
+
+# 链路条目里的源名称 -> 标准 provider 名（大小写/常见别名归一）
+_PROVIDER_ALIASES = {
+    "tavily": "Tavily",
+    "exa": "Exa",
+    "deepseek": "DeepSeek",
+    "baidu": "百度",
+    "百度": "百度",
+    "duckduckgo": "DuckDuckGo",
+    "ddg": "DuckDuckGo",
+    "mcp": "MCP",
+}
+
+# 需要 API Key 的源 -> 对应配置对象，用于链路里判断该源当前是否可用
+_KEY_CONFIGS = {
+    "Tavily": tavily_config,
+    "Exa": exa_config,
+    "DeepSeek": deepseek_search_config,
+    "百度": baidu_search_config,
+}
 
 
 def _get_provider() -> str:
@@ -133,6 +163,128 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
     return normalized
 
 
+def _normalize_provider(raw: str) -> str | None:
+    """把链路条目里的源名称归一为标准 provider 名"""
+    name = raw.strip().strip("\"'")
+    if not name:
+        return None
+    return _PROVIDER_ALIASES.get(name.lower())
+
+
+def _parse_source_entries(entries: list | None) -> list[tuple[str, int]]:
+    """
+    解析主/备用源配置，如 ["Tavily:3", "百度=2"] -> [("Tavily", 3), ("百度", 2)]
+
+    未写条数的条目默认 3 条；无法识别的条目跳过并记日志。
+    """
+    import re
+
+    parsed: list[tuple[str, int]] = []
+    for raw in entries or []:
+        if not isinstance(raw, str):
+            continue
+        match = re.match(r"^\s*([^\s:：=＝]+)\s*(?:[:：=＝]\s*(\d+))?\s*$", raw)
+        if not match:
+            logger.warning(t("log.ai.websearch_chain_parse_skip", p0=raw))
+            continue
+        provider = _normalize_provider(match.group(1))
+        if provider is None:
+            logger.warning(t("log.ai.websearch_chain_parse_skip", p0=raw))
+            continue
+        quota = int(match.group(2)) if match.group(2) else 3
+        parsed.append((provider, max(1, min(50, quota))))
+    return parsed
+
+
+def _is_provider_ready(provider: str) -> bool:
+    """链路里判断某个源当前是否可用（无 Key 的源直接跳过，不浪费一次请求）"""
+    if provider in ("DuckDuckGo", "MCP"):
+        return True
+    key_config = _KEY_CONFIGS.get(provider)
+    if key_config is None:
+        return False
+    keys = key_config.get_config("api_key").data
+    if isinstance(keys, str):
+        keys = [keys]
+    return bool([k for k in (keys or []) if str(k).strip()])
+
+
+async def _dispatch_search(provider: str, query: str, max_results: int) -> list[dict]:
+    """按 provider 名把请求分发到具体搜索实现（失败即换下一个引擎，不轮询同引擎的多个 Key）"""
+    if provider == "Exa":
+        return await exa_search(query=query, max_results=max_results, fail_fast=True)
+
+    if provider == "DeepSeek":
+        return await deepseek_search(query=query, max_results=max_results, fail_fast=True)
+
+    if provider == "百度":
+        return await baidu_search(query=query, max_results=max_results, fail_fast=True)
+
+    if provider == "DuckDuckGo":
+        return await duckduckgo_search(query=query, max_results=max_results)
+
+    if is_mcp_provider(provider):
+        return await _mcp_search(query=query, max_results=max_results)
+
+    return await tavily_search(query=query, max_results=max_results, fail_fast=True)
+
+
+async def _run_source_group(
+    group: list[tuple[str, int]],
+    total: int,
+    query: str,
+) -> list[dict]:
+    """
+    按顺序执行一组源，凑够 total 条即停。
+
+    某个源无 Key / 请求失败 / 返回不足时，它没凑够的条数会顺延给下一个源承担。
+    """
+    collected: list[dict] = []
+    carry = 0
+
+    for provider, quota in group:
+        if len(collected) >= total:
+            break
+
+        if not _is_provider_ready(provider):
+            logger.info(t("log.ai.websearch_chain_skip_provider", p0=provider))
+            carry += quota
+            continue
+
+        want = min(quota + carry, total - len(collected))
+        if want <= 0:
+            break
+
+        got = await _dispatch_search(provider, query, want)
+        collected.extend(got)
+        # 没凑够的部分继续顺延给下一个源
+        carry = max(0, want - len(got))
+
+    return collected[:total]
+
+
+async def _search_chain(query: str) -> list[dict] | None:
+    """
+    主备链路搜索。
+
+    返回 None 表示没有配置主用源列表（调用方应退回单一 provider 模式）。
+    """
+    primary = _parse_source_entries(ai_config.get_config("websearch_primary_sources").data)
+    if not primary:
+        return None
+
+    total = int(ai_config.get_config("websearch_total_results").data or "6")
+    results = await _run_source_group(primary, total, query)
+
+    if not results:
+        backup = _parse_source_entries(ai_config.get_config("websearch_backup_sources").data)
+        if backup:
+            logger.info(t("log.ai.websearch_chain_fallback"))
+            results = await _run_source_group(backup, total, query)
+
+    return results
+
+
 async def web_search(
     query: str,
     max_results: int | None = None,
@@ -154,10 +306,23 @@ async def web_search(
         >>> for r in results:
         ...     print(r["title"], r["url"])
     """
+    chained = await _search_chain(query)
+    if chained is not None:
+        return chained
+
     provider = _get_provider()
 
     if provider == "Exa":
         return await exa_search(query=query, max_results=max_results)
+
+    if provider == "DeepSeek":
+        return await deepseek_search(query=query, max_results=max_results)
+
+    if provider == "百度":
+        return await baidu_search(query=query, max_results=max_results)
+
+    if provider == "DuckDuckGo":
+        return await duckduckgo_search(query=query, max_results=max_results)
 
     if is_mcp_provider(provider):
         return await _mcp_search(query=query, max_results=max_results)
@@ -183,10 +348,26 @@ async def web_search_with_context(
     Returns:
         包含 results(结果列表) 和 answer(AI摘要) 的字典
     """
+    chained = await _search_chain(query)
+    if chained is not None:
+        return {"results": chained, "answer": None}
+
     provider = _get_provider()
 
     if provider == "Exa":
         results = await exa_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None}
+
+    if provider == "DeepSeek":
+        results = await deepseek_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None}
+
+    if provider == "百度":
+        results = await baidu_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None}
+
+    if provider == "DuckDuckGo":
+        results = await duckduckgo_search(query=query, max_results=max_results)
         return {"results": results, "answer": None}
 
     if is_mcp_provider(provider):

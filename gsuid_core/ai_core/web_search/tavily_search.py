@@ -135,6 +135,7 @@ async def _do_tavily_search_with_context(
 async def tavily_search(
     query: str,
     max_results: Optional[int] = None,
+    fail_fast: bool = False,
 ) -> list[dict]:
     """
     使用 Tavily API 进行 web 搜索
@@ -144,6 +145,7 @@ async def tavily_search(
     Args:
         query: 搜索查询关键词
         max_results: 最大返回结果数量，默认10条
+        fail_fast: 只尝试一个 api_key 即返回(用于引擎级主备链路: Key 不做备份, 失败就直接切下一个引擎)
 
     Returns:
         搜索结果列表，每条包含 title、url、content、score 等字段
@@ -164,9 +166,11 @@ async def tavily_search(
 
     search_depth = tavily_config.get_config("search_depth").data or "advanced"
 
+    # 引擎级主备链路里只给一次机会: Key 不做备份, 失败直接切下一个引擎
+    max_attempts = 1 if fail_fast else len(api_key_pool)
     tried_keys = set()
 
-    while len(tried_keys) < len(api_key_pool):
+    while len(tried_keys) < max_attempts:
         api_key = _select_api_key([k for k in api_key_pool if k not in tried_keys])
         if not api_key:
             break
@@ -184,8 +188,8 @@ async def tavily_search(
             logger.info(t("log.ai.websearch_tavily_search_query", query=query, p0=len(results)))
             return results
 
-        except Exception:
-            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
+        except Exception as e:
+            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:], e=e))
             continue
 
     logger.error(t("log.ai.websearch_tavily_api_keys"))
@@ -240,8 +244,8 @@ async def tavily_search_with_context(
             )
             return result
 
-        except Exception:
-            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
+        except Exception as e:
+            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:], e=e))
             continue
 
     logger.error(t("log.ai.websearch_tavily_api_keys"))

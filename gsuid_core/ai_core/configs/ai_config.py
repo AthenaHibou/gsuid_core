@@ -106,9 +106,29 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "websearch_provider": GsStrConfig(
         "网络搜索服务提供方",
-        "指定网络搜索服务提供方",
+        "指定网络搜索服务提供方。Tavily/Exa 需 API Key; DeepSeek 走官方 Search API(按次计费); "
+        "百度 走千帆 AI 搜索(有每日免费额度); DuckDuckGo 无需 Key",
         "Tavily",
-        options=["Tavily", "Exa", "MCP"],
+        options=["Tavily", "Exa", "DeepSeek", "百度", "DuckDuckGo", "MCP"],
+    ),
+    "websearch_total_results": GsIntConfig(
+        "网络搜索总条数(N)",
+        "主备引擎链路一次要凑够的结果总数。主用引擎按各自条数依次请求，某引擎失败/结果不足时由后续主用引擎承担",
+        6,
+        options=[3, 5, 6, 8, 10, 15],
+    ),
+    "websearch_primary_sources": GsListStrConfig(
+        "主用引擎(引擎:条数)",
+        "按顺序执行的搜索引擎列表，格式『引擎:条数』，如 Exa:3、百度:3。这里配置的是搜索引擎本身，不是 API Key；"
+        "同一引擎的多个 Key 不参与主备(失败即切下一个引擎)。留空则只用上面的单一提供方",
+        [],
+        options=[],
+    ),
+    "websearch_backup_sources": GsListStrConfig(
+        "备用引擎(引擎:条数)",
+        "主用引擎全部失败后才启用的搜索引擎列表，同样填『引擎:条数』，不是 Key 备份；留空则没有备用链路",
+        [],
+        options=[],
     ),
     "image_understand_provider": GsStrConfig(
         "图片理解服务提供方",
@@ -502,6 +522,59 @@ MINIMAX_CONFIG: Dict[str, GSC] = {
         "指定资源提供方式，url 为返回 URL 链接，local 为返回本地文件路径",
         "url",
         options=["url", "local"],
+    ),
+}
+
+DEEPSEEK_SEARCH_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "DeepSeek API密钥",
+        "指定 DeepSeek API 密钥，用于调用官方 Search 接口"
+        "(https://api-docs.deepseek.com/zh-cn/guides/search/)，按次计费(约 5 元/1000 次)",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "指定每次搜索的最大返回结果数量(接口限制 1~50)",
+        10,
+        options=[5, 10, 15, 20, 30, 50],
+    ),
+}
+
+BAIDU_SEARCH_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "百度千帆 API密钥",
+        "指定百度智能云 AppBuilder API Key，用于调用千帆 AI 搜索(每日有免费额度)，"
+        "请前往 https://console.bce.baidu.com/iam/#/iam/apikey/list 获取",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "指定每次搜索的最大返回结果数量",
+        10,
+        options=[5, 10, 15, 20, 30],
+    ),
+}
+
+DUCKDUCKGO_SEARCH_CONFIG: Dict[str, GSC] = {
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "指定每次搜索的最大返回结果数量",
+        10,
+        options=[5, 10, 15, 20, 30],
+    ),
+    "region": GsStrConfig(
+        "搜索地区",
+        "指定 DuckDuckGo 搜索地区，wt-wt 为全球，cn-zh 为中国",
+        "wt-wt",
+        options=["wt-wt", "cn-zh", "us-en", "jp-jp"],
+    ),
+    "backend": GsStrConfig(
+        "搜索后端",
+        "指定 ddgs 使用的搜索后端，duckduckgo 最快；auto 会依次尝试多个后端(较慢但更抗限流)",
+        "duckduckgo",
+        options=["duckduckgo", "auto", "bing", "brave", "google", "mojeek"],
     ),
 }
 
@@ -931,6 +1004,24 @@ minimax_config = StringConfig(
     "GsCore AI MiniMax搜索配置",
     get_res_path("ai_core") / "minimax_config.json",
     MINIMAX_CONFIG,
+)
+
+deepseek_search_config = StringConfig(
+    "GsCore AI DeepSeek搜索配置",
+    get_res_path("ai_core") / "deepseek_search_config.json",
+    DEEPSEEK_SEARCH_CONFIG,
+)
+
+baidu_search_config = StringConfig(
+    "GsCore AI 百度搜索配置",
+    get_res_path("ai_core") / "baidu_search_config.json",
+    BAIDU_SEARCH_CONFIG,
+)
+
+duckduckgo_search_config = StringConfig(
+    "GsCore AI DuckDuckGo搜索配置",
+    get_res_path("ai_core") / "duckduckgo_search_config.json",
+    DUCKDUCKGO_SEARCH_CONFIG,
 )
 
 openai_embedding_config = StringConfig(
